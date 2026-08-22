@@ -438,6 +438,10 @@ async function fetchDiscoverMedia(
   return rowsFromDiscover(ko, en, kind);
 }
 
+function applyVarietyOnAirFilter(query: Record<string, string>): void {
+  applyRecentDateFilter(query, "tv", "air", recentDateRange(RECENT_AIR_DAYS));
+}
+
 async function fetchRelaxedProviderMedia(
   region: string,
   providerID: number,
@@ -454,8 +458,11 @@ async function fetchRelaxedProviderMedia(
   const genreID = genre?.tvID ?? genre?.movieID;
   if (genreID) query.with_genres = String(genreID);
 
+  const tvQuery = { ...query };
+  if (genre?.tvID === TV_GENRE_REALITY) applyVarietyOnAirFilter(tvQuery);
+
   const [tv, movie] = await Promise.all([
-    fetchDiscoverPages("tv", query),
+    fetchDiscoverPages("tv", tvQuery),
     genre?.tvID && !genre.movieID
       ? Promise.resolve({ ko: [], en: [] })
       : fetchDiscoverPages("movie", query),
@@ -489,7 +496,9 @@ async function fetchGenreMedia(
   const rows = await Promise.all(kinds.map(async (kind) => {
     const genreID = kind === "movie" ? genre.movieID : genre.tvID;
     if (!genreID) return [] as DiscoverRow[];
-    const { ko, en } = await fetchDiscoverPages(kind, { ...query, with_genres: String(genreID) }, 1);
+    const kindQuery = { ...query, with_genres: String(genreID) };
+    if (kind === "tv" && genreID === TV_GENRE_REALITY) applyVarietyOnAirFilter(kindQuery);
+    const { ko, en } = await fetchDiscoverPages(kind, kindQuery, 1);
     return rowsFromDiscover(ko, en, kind);
   }));
 
@@ -507,7 +516,7 @@ async function fetchTvingVarietyMedia(): Promise<DiscoverRow[]> {
     sort_by: "popularity.desc",
     page: "1",
   };
-  applyRecentDateFilter(query, "tv", "air");
+  applyVarietyOnAirFilter(query);
 
   const { ko, en } = await fetchDiscoverPages("tv", query);
   return rowsFromDiscover(ko, en, "tv");
@@ -577,7 +586,8 @@ async function fetchDiscoverSupplement(
 
   if (RELAXED_ORIGIN_PROVIDERS.has(providerID)) {
     const rows = await fetchRelaxedProviderMedia(region, providerID, genre);
-    for (const hit of rowsToHits(rows, provider, seen, limit, "preserve")) {
+    const sort = genre?.tvID === TV_GENRE_REALITY ? "popularity" : "preserve";
+    for (const hit of rowsToHits(rows, provider, seen, limit, sort)) {
       hits.push(hit);
       if (hits.length >= limit) return hits;
     }
@@ -586,7 +596,13 @@ async function fetchDiscoverSupplement(
 
   if (genre && (genre.tvID || genre.movieID) && !(genre.tvID && genre.movieID)) {
     const rows = await fetchGenreMedia(region, providerID, genre);
-    for (const hit of rowsToHits(rows, provider, seen, limit)) {
+    for (const hit of rowsToHits(
+      rows,
+      provider,
+      seen,
+      limit,
+      genre.tvID === TV_GENRE_REALITY ? "popularity" : "votes",
+    )) {
       hits.push(hit);
       if (hits.length >= limit) return hits;
     }
@@ -650,7 +666,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v6`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v7`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
