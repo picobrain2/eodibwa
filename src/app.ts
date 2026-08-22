@@ -1,5 +1,5 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
-import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
+import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
 import { translateReviews } from "./translate";
@@ -172,14 +172,14 @@ function recommendHTML(): string {
   return `
     <div class="recommend">
       <h2 class="recommend-title">오늘 뭐 볼까</h2>
-      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 인기${genreLabel}</h3>
+      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 급상승${genreLabel}</h3>
       <div class="genre-tabs">
         ${RECOMMEND_GENRES.map((genre) => `
           <button class="genre-tab ${genre.id === selectedGenreID ? "active" : ""}" data-genre="${genre.id}" ${loadingProviderRecommend && genre.id !== selectedGenreID ? "disabled" : ""}>${escapeHTML(genre.name)}</button>
         `).join("")}
       </div>
       ${loadingProviderRecommend ? `<div class="loading inline">OTT별 순위 불러오는 중…</div>` : ""}
-      <p class="recommend-hint">TMDB 주간 급상승 + 플랫폼 인기순입니다. Netflix 등 앱 내 순위와는 다를 수 있습니다.</p>
+      <p class="recommend-hint">오늘·이번 주 TMDB 급상승 차트 중 해당 OTT에서 시청 가능한 작품입니다. Netflix 앱 순위와는 다를 수 있습니다.</p>
       ${recommendProviders.map((group) => ottGroupHTML(group)).join("")}
       ${!loadingProviderRecommend && !recommendProviders.length ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
       <h3 class="recommend-section">요즘 인기</h3>
@@ -219,12 +219,16 @@ function updateDetail(): void {
     if (next === settings.region) return;
     settings.region = next;
     invalidateNowPlaying();
+    invalidateRecommendChart();
+    recommendLoaded = false;
     void refreshNowPlaying().then(() => {
       if (detail?.kind === "movie") {
         detail.inTheaters = nowPlayingIDs.has(detail.tmdbID);
       }
       updateDetail();
     });
+    void loadRecommendations();
+    updateDetail();
   });
 }
 
