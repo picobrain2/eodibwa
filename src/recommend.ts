@@ -54,21 +54,33 @@ const CATALOG_TTL_MS = 60 * 60 * 1000;
 const CHART_TTL_MS = 30 * 60 * 1000;
 const CHART_SIZE = 36;
 const BATCH_SIZE = 6;
-const RECENT_POPULAR_DAYS = 7;
+const RECENT_AIR_DAYS = 30;
+const RECENT_PREMIERE_DAYS = 180;
+const RECENT_MOVIE_DAYS = 90;
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
 
-function recentDateRange(days = RECENT_POPULAR_DAYS): { gte: string; lte: string } {
+function recentDateRange(days = RECENT_AIR_DAYS): { gte: string; lte: string } {
   const lte = new Date();
   const gte = new Date();
   gte.setDate(gte.getDate() - days);
   return { gte: isoDate(gte), lte: isoDate(lte) };
 }
 
-function applyRecentDateFilter(query: Record<string, string>, kind: MediaKind, range = recentDateRange()): void {
+function applyRecentDateFilter(
+  query: Record<string, string>,
+  kind: MediaKind,
+  mode: "air" | "premiere" | "release",
+  range = recentDateRange(mode === "premiere" ? RECENT_PREMIERE_DAYS : mode === "release" ? RECENT_MOVIE_DAYS : RECENT_AIR_DAYS),
+): void {
   if (kind === "tv") {
+    if (mode === "premiere") {
+      query["first_air_date.gte"] = range.gte;
+      query["first_air_date.lte"] = range.lte;
+      return;
+    }
     query["air_date.gte"] = range.gte;
     query["air_date.lte"] = range.lte;
     return;
@@ -180,7 +192,7 @@ function matchesGenre(genreIDs: number[], kind: MediaKind, genre?: RecommendGenr
 }
 
 export function recentPopularRange(): { gte: string; lte: string } {
-  return recentDateRange();
+  return recentDateRange(RECENT_AIR_DAYS);
 }
 
 export function invalidateRecommendChart(): void {
@@ -190,43 +202,8 @@ export function invalidateRecommendChart(): void {
 }
 
 export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
-  const range = recentDateRange();
-  const base: Record<string, string> = {
-    language: "ko-KR",
-    sort_by: "popularity.desc",
-    page: "1",
-  };
-  const tvQuery = { ...base };
-  const movieQuery = { ...base };
-  applyRecentDateFilter(tvQuery, "tv", range);
-  applyRecentDateFilter(movieQuery, "movie", range);
-
-  const [koTv, enTv, koMovie, enMovie] = await Promise.all([
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", tvQuery),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, language: "en-US" }),
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/movie", movieQuery),
-    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, language: "en-US" }),
-  ]);
-
-  const enByKey = new Map<string, MediaItem>();
-  for (const item of enTv.results ?? []) enByKey.set(`tv-${item.id}`, item);
-  for (const item of enMovie.results ?? []) enByKey.set(`movie-${item.id}`, item);
-
-  const seen = new Set<string>();
-  const hits = [
-    ...(koTv.results ?? []).map((item) => ({ item, kind: "tv" as MediaKind })),
-    ...(koMovie.results ?? []).map((item) => ({ item, kind: "movie" as MediaKind })),
-  ]
-    .sort((a, b) => (b.item.popularity ?? 0) - (a.item.popularity ?? 0))
-    .flatMap(({ item, kind }) => {
-      const key = `${kind}-${item.id}`;
-      if (seen.has(key)) return [];
-      seen.add(key);
-      return [toHit(item, kind, enByKey.get(key))];
-    })
-    .slice(0, limit);
-
-  return hits;
+  const rows = await fetchCombinedTrending(Math.max(limit, CHART_SIZE));
+  return rows.slice(0, limit).map((row) => toHit(row.item, row.kind, row.english));
 }
 
 async function providerCatalog(region: string): Promise<Map<number, { name: string; logo?: string }>> {
@@ -360,7 +337,8 @@ async function fetchDiscoverMedia(
   kind: MediaKind,
   region: string,
   providerID: number,
-  genre?: RecommendGenre,
+  genre: RecommendGenre | undefined,
+  mode: "air" | "premiere" | "release",
 ): Promise<DiscoverRow[]> {
   const query: Record<string, string> = {
     language: "ko-KR",
@@ -370,9 +348,14 @@ async function fetchDiscoverMedia(
     sort_by: "popularity.desc",
     page: "1",
   };
+  if (region === "KR") query.with_origin_country = "KR";
   const genreID = kind === "movie" ? genre?.movieID : genre?.tvID;
   if (genreID) query.with_genres = String(genreID);
-  applyRecentDateFilter(query, kind);
+  if (mode === "premiere" && region === "KR" && kind === "tv") {
+    query.sort_by = "vote_count.desc";
+    query["vote_count.gte"] = "5";
+  }
+  applyRecentDateFilter(query, kind, mode);
 
   const [ko, en] = await Promise.all([
     tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, query),
@@ -387,17 +370,36 @@ async function fetchDiscoverMedia(
   }));
 }
 
-async function fetchDiscoverProviderHits(
+function rowsToHits(
+  rows: DiscoverRow[],
+  provider: { id: number; name: string; logo?: string },
+  seen: Set<string>,
+  limit: number,
+): SearchHit[] {
+  const hits: SearchHit[] = [];
+  for (const row of rows.sort((a, b) => {
+    const left = (b.item.vote_count ?? 0) * 10 + (b.item.popularity ?? 0);
+    const right = (a.item.vote_count ?? 0) * 10 + (a.item.popularity ?? 0);
+    return left - right;
+  })) {
+    const key = `${row.kind}-${row.item.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    hits.push(toHit(row.item, row.kind, row.english, provider));
+    if (hits.length >= limit) break;
+  }
+  return hits;
+}
+
+async function fetchDiscoverSupplement(
   region: string,
   providerID: number,
   provider: { id: number; name: string; logo?: string },
-  genre?: RecommendGenre,
-  limit = 8,
+  genre: RecommendGenre | undefined,
+  seen: Set<string>,
+  limit: number,
 ): Promise<SearchHit[]> {
-  const range = recentDateRange();
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-${range.gte}-${range.lte}`;
-  const cached = discoverCache.get(cacheKey);
-  if (cached && cached.expires > Date.now()) return cached.hits;
+  if (limit <= 0) return [];
 
   const kinds: MediaKind[] = genre
     ? [
@@ -407,20 +409,48 @@ async function fetchDiscoverProviderHits(
     : ["tv", "movie"];
   const mediaKinds = kinds.length ? kinds : (["tv", "movie"] as MediaKind[]);
 
-  const rows = (await Promise.all(mediaKinds.map((kind) => fetchDiscoverMedia(kind, region, providerID, genre)))).flat();
-  const seen = new Set<string>();
-  const hits = rows
-    .sort((a, b) => (b.item.popularity ?? 0) - (a.item.popularity ?? 0))
-    .flatMap((row) => {
-      const key = `${row.kind}-${row.item.id}`;
-      if (seen.has(key)) return [];
-      seen.add(key);
-      return [toHit(row.item, row.kind, row.english, provider)];
-    })
-    .slice(0, limit);
-
-  discoverCache.set(cacheKey, { hits, expires: Date.now() + CHART_TTL_MS });
+  const hits: SearchHit[] = [];
+  for (const kind of mediaKinds) {
+    const modes: Array<"premiere" | "air" | "release"> = kind === "tv" ? ["premiere", "air"] : ["release"];
+    for (const mode of modes) {
+      const rows = await fetchDiscoverMedia(kind, region, providerID, genre, mode);
+      for (const hit of rowsToHits(rows, provider, seen, limit - hits.length)) {
+        hits.push(hit);
+        if (hits.length >= limit) return hits;
+      }
+    }
+  }
   return hits;
+}
+
+async function fetchProviderPopularHits(
+  region: string,
+  providerID: number,
+  provider: { id: number; name: string; logo?: string },
+  genre: RecommendGenre | undefined,
+  entries: ChartEntry[],
+  catalog: Map<number, { name: string; logo?: string }>,
+  limit = 8,
+): Promise<SearchHit[]> {
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v2`;
+  const cached = discoverCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.hits;
+
+  const seen = new Set<string>();
+  const hits: SearchHit[] = [];
+
+  for (const hit of projectSingleProvider(entries, catalog, genre, providerID, limit)) {
+    seen.add(hit.id);
+    hits.push(hit);
+  }
+
+  if (hits.length < limit) {
+    hits.push(...await fetchDiscoverSupplement(region, providerID, provider, genre, seen, limit - hits.length));
+  }
+
+  const result = hits.slice(0, limit);
+  discoverCache.set(cacheKey, { hits: result, expires: Date.now() + CHART_TTL_MS });
+  return result;
 }
 
 export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
@@ -448,7 +478,7 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
       }
 
       if (TMDB_DISCOVER_PROVIDERS.has(id)) {
-        const hits = await fetchDiscoverProviderHits(region, id, provider, genre);
+        const hits = await fetchProviderPopularHits(region, id, provider, genre, entries, catalog);
         if (hits.length) return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
         return null;
       }

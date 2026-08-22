@@ -1,6 +1,6 @@
 import { fetchDetail, fetchPopularReviews, providerLink, searchTitles, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
-import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, recentPopularRange, regionProviderIDs, type RecommendProvider } from "./recommend";
+import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
@@ -372,11 +372,11 @@ function recommendHTML(options?: { hideTitle?: boolean }): string {
   const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
   const motnHint = settings.hasMOTN
     ? (motnCacheFresh(settings.region)
-      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha·쿠팡플레이는 최근 7일 TMDB 인기작입니다."
+      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작입니다."
       : (loadingRecommend || loadingProviderRecommend)
         ? "Netflix·Disney+ 공식 Top 10을 불러오는 중…"
         : "Netflix·Disney+ Top 10을 불러오지 못해 TMDB 급상승으로 표시합니다.")
-    : "TVING·Wavve·Watcha·쿠팡플레이는 최근 7일 TMDB 인기작, Netflix 등은 Movie of the Night 공식 Top 10을 사용합니다.";
+    : "TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작, Netflix 등은 Movie of the Night 공식 Top 10을 사용합니다.";
   return `
     <div class="recommend">
       ${options?.hideTitle ? "" : `<h2 class="recommend-title">오늘 뭐 볼까</h2>`}
@@ -392,7 +392,7 @@ function recommendHTML(options?: { hideTitle?: boolean }): string {
       <p class="recommend-hint">${escapeHTML(motnHint)}</p>
       ${visibleRecommendProviders().map((group) => ottGroupHTML(group, true)).join("")}
       ${!loadingProviderRecommend && !visibleRecommendProviders().length && !recommendError ? `<div class="empty inline">이 OTT·장르에 해당하는 작품이 없습니다.</div>` : ""}
-      <h3 class="recommend-section">이번 주 인기 <small>${escapeHTML(recentPopularRange().gte)} ~ ${escapeHTML(recentPopularRange().lte)}</small></h3>
+      <h3 class="recommend-section">이번 주 인기 <small>TMDB 주간·일간 급상승</small></h3>
       ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
     </div>`;
 }
