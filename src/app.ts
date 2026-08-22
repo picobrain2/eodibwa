@@ -29,6 +29,10 @@ let nowPlayingIDs = new Set<number>();
 let providerRecommendGeneration = 0;
 let recommendError = "";
 let showRecommendPage = false;
+let showDetailPage = false;
+let suppressHistory = false;
+
+type MobileView = "main" | "recommend" | "detail";
 
 function isMobileLayout(): boolean {
   return window.matchMedia("(max-width: 860px)").matches;
@@ -64,6 +68,53 @@ let resultsEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
 let settingsHost!: HTMLDivElement;
 let recommendHost!: HTMLDivElement;
+let detailHost!: HTMLDivElement;
+
+function syncMobileViewFromHistory(state: { mobile?: MobileView } | null): void {
+  const view = state?.mobile ?? "main";
+  showDetailPage = view === "detail";
+  showRecommendPage = view === "recommend";
+}
+
+function pushMobileView(view: MobileView): void {
+  if (!isMobileLayout() || suppressHistory) return;
+  history.pushState({ mobile: view }, "");
+}
+
+function openRecommendPage(): void {
+  showRecommendPage = true;
+  if (!recommendLoaded && !loadingRecommend) void loadRecommendations();
+  pushMobileView("recommend");
+  updateRecommendPage();
+}
+
+function openDetailPage(): void {
+  showDetailPage = true;
+  pushMobileView("detail");
+  updateDetail();
+}
+
+function closeRecommendPage(useHistory = true): void {
+  if (useHistory && isMobileLayout() && history.state?.mobile === "recommend") {
+    suppressHistory = true;
+    history.back();
+    suppressHistory = false;
+    return;
+  }
+  showRecommendPage = false;
+  updateRecommendPage();
+}
+
+function closeDetailPage(useHistory = true): void {
+  if (useHistory && isMobileLayout() && history.state?.mobile === "detail") {
+    suppressHistory = true;
+    history.back();
+    suppressHistory = false;
+    return;
+  }
+  showDetailPage = false;
+  updateDetail();
+}
 
 function activeGenreName(): string {
   return RECOMMEND_GENRES.find((genre) => genre.id === selectedGenreID)?.name ?? "전체";
@@ -109,14 +160,15 @@ function bindHits(root: ParentNode): void {
   root.querySelectorAll<HTMLButtonElement>("[data-id]").forEach((button) => {
     button.addEventListener("click", () => {
       selected = findHit(button.dataset.id ?? "");
-      if (showRecommendPage) {
-        showRecommendPage = false;
-        updateRecommendPage();
-      }
       updateResults();
-      void loadSelected().then(() => {
-        if (isMobileLayout()) detailEl.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+      if (isMobileLayout()) {
+        if (showRecommendPage) {
+          showRecommendPage = false;
+          updateRecommendPage();
+        }
+        openDetailPage();
+      }
+      void loadSelected();
     });
   });
 }
@@ -161,6 +213,7 @@ function mount(): void {
     </div>
     <div id="settings-host"></div>
     <div id="recommend-host"></div>
+    <div id="detail-host"></div>
   `;
 
   searchInput = app.querySelector<HTMLInputElement>("#q")!;
@@ -168,6 +221,9 @@ function mount(): void {
   detailEl = app.querySelector<HTMLElement>(".detail")!;
   settingsHost = app.querySelector<HTMLDivElement>("#settings-host")!;
   recommendHost = app.querySelector<HTMLDivElement>("#recommend-host")!;
+  detailHost = app.querySelector<HTMLDivElement>("#detail-host")!;
+
+  if (isMobileLayout()) history.replaceState({ mobile: "main" as MobileView }, "");
 
   searchInput.value = query;
   searchInput.addEventListener("input", () => {
@@ -195,8 +251,23 @@ function mount(): void {
   });
 
   window.addEventListener("resize", () => {
-    if (!isMobileLayout()) showRecommendPage = false;
+    if (!isMobileLayout()) {
+      showRecommendPage = false;
+      showDetailPage = false;
+      recommendHost.innerHTML = "";
+      detailHost.innerHTML = "";
+      updateDetail();
+    } else if (!history.state?.mobile) {
+      history.replaceState({ mobile: "main" as MobileView }, "");
+    }
     updateResults();
+    updateRecommendPage();
+  });
+
+  window.addEventListener("popstate", (event) => {
+    if (!isMobileLayout()) return;
+    syncMobileViewFromHistory(event.state as { mobile?: MobileView } | null);
+    updateDetail();
     updateRecommendPage();
   });
 }
@@ -260,9 +331,7 @@ function updateResults(): void {
   bindHits(resultsEl);
   bindRecommendControls(resultsEl);
   resultsEl.querySelector("#open-recommend")?.addEventListener("click", () => {
-    showRecommendPage = true;
-    if (!recommendLoaded && !loadingRecommend) void loadRecommendations();
-    updateRecommendPage();
+    openRecommendPage();
   });
 }
 
@@ -282,8 +351,7 @@ function updateRecommendPage(): void {
     </div>
   `;
   recommendHost.querySelector("#close-recommend")?.addEventListener("click", () => {
-    showRecommendPage = false;
-    updateRecommendPage();
+    closeRecommendPage();
   });
   const body = recommendHost.querySelector(".recommend-page-body");
   if (!body) return;
@@ -291,9 +359,8 @@ function updateRecommendPage(): void {
   bindRecommendControls(body);
 }
 
-function updateDetail(): void {
-  detailEl.innerHTML = detailHTML();
-  detailEl.querySelector("#region")?.addEventListener("change", (event) => {
+function bindDetailControls(root: ParentNode): void {
+  root.querySelector("#region")?.addEventListener("change", (event) => {
     const next = (event.target as HTMLSelectElement).value;
     if (next === settings.region) return;
     settings.region = next;
@@ -311,10 +378,47 @@ function updateDetail(): void {
   });
 }
 
-function detailHTML(): string {
+function updateDetail(): void {
+  if (isMobileLayout()) {
+    detailEl.innerHTML = "";
+    updateDetailPage();
+    return;
+  }
+  detailHost.innerHTML = "";
+  detailEl.innerHTML = detailHTML();
+  bindDetailControls(detailEl);
+}
+
+function updateDetailPage(): void {
+  if (!mounted || !isMobileLayout() || !showDetailPage) {
+    detailHost.innerHTML = "";
+    return;
+  }
+  const heading = detail
+    ? (detail.titleKO || detail.titleEN)
+    : selected
+      ? (selected.titleKO || selected.titleEN)
+      : "상세 정보";
+  detailHost.innerHTML = `
+    <div class="detail-page">
+      <header class="detail-page-head">
+        <button class="ghost" type="button" id="close-detail">← 돌아가기</button>
+        <h2>${escapeHTML(heading)}</h2>
+      </header>
+      <div class="detail-page-body">${detailHTML({ forOverlay: true })}</div>
+    </div>
+  `;
+  detailHost.querySelector("#close-detail")?.addEventListener("click", () => {
+    closeDetailPage();
+  });
+  const body = detailHost.querySelector(".detail-page-body");
+  if (body) bindDetailControls(body);
+}
+
+function detailHTML(options?: { forOverlay?: boolean }): string {
   if (loadingDetail && !detail) return `<div class="loading">정보를 불러오는 중…</div>`;
   if (detailError && !detail) return `<div class="empty">${escapeHTML(detailError)}</div>`;
-  if (!detail) return emptyDetailHTML();
+  if (!detail) return options?.forOverlay ? `<div class="loading">정보를 불러오는 중…</div>` : emptyDetailHTML();
   const d = detail;
   const primary = d.titleKO || d.titleEN;
   const secondary = d.titleEN && d.titleEN !== primary ? d.titleEN : "";
@@ -507,7 +611,7 @@ async function runSearch(raw: string): Promise<void> {
     if (generation !== searchGeneration) return;
     if (searchInput.value.trim() !== trimmed) return;
     hits = nextHits;
-    selected = hits[0];
+    selected = isMobileLayout() ? undefined : hits[0];
     updateResults();
     if (selected) await loadSelected();
   } catch (err) {
