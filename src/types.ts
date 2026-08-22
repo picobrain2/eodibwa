@@ -66,6 +66,17 @@ export interface TitleDetail {
   networks: string[];
   extraLinks: { name: string; url: string }[];
   wikipediaURL?: string;
+  popularReviews: PopularReview[];
+}
+
+export interface PopularReview {
+  id: string;
+  author: string;
+  content: string;
+  likes?: number;
+  rating?: number;
+  source: string;
+  url?: string;
 }
 
 export const REGIONS: { code: string; name: string }[] = [

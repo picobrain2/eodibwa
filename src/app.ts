@@ -13,6 +13,13 @@ let loadingDetail = false;
 let error = "";
 let showSettings = !settings.hasTMDB;
 let debounce: number | undefined;
+let searchGeneration = 0;
+let mounted = false;
+
+let searchInput!: HTMLInputElement;
+let resultsEl!: HTMLDivElement;
+let detailEl!: HTMLElement;
+let settingsHost!: HTMLDivElement;
 
 function filteredHits(): SearchHit[] {
   if (filter === "all") return hits;
@@ -24,13 +31,20 @@ function escapeHTML(value: string): string {
 }
 
 export function render(): void {
-  const list = filteredHits();
+  if (!mounted) mount();
+  updateResults();
+  updateDetail();
+  updateSettings();
+}
+
+function mount(): void {
+  mounted = true;
   app.innerHTML = `
     <div class="layout">
       <aside class="sidebar">
         <div class="search-box">
           <h1>어디봐</h1>
-          <input id="q" value="${escapeHTML(query)}" placeholder="드라마 · 영화 · 예능 (한글/영어)" />
+          <input id="q" placeholder="드라마 · 영화 · 예능 (한글/영어)" />
           <div class="filters">
             ${(["all", "movie", "tv"] as MediaFilter[]).map((item) => `
               <button data-filter="${item}" class="${filter === item ? "active" : ""}">${item === "all" ? "전체" : item === "movie" ? "영화" : "시리즈"}</button>
@@ -38,26 +52,76 @@ export function render(): void {
           </div>
           <button class="linkish" id="open-settings">API 키 설정</button>
         </div>
-        <div class="results">
-          ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
-          ${error && !hits.length ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
-          ${!query.trim() && !hits.length ? `<div class="empty">한글이나 영어 제목으로 검색하세요.<br>예: 오징어게임, Squid Game</div>` : ""}
-          ${list.map((hit) => `
-            <button class="hit ${selected?.id === hit.id ? "selected" : ""}" data-id="${hit.id}">
-              <img alt="" src="${posterURL(hit.posterPath) ?? ""}" />
-              <span>
-                <b>${escapeHTML(hit.titleKO || hit.titleEN)}</b>
-                <small>${escapeHTML([hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · "))}</small>
-              </span>
-            </button>
-          `).join("")}
-        </div>
+        <div class="results"></div>
       </aside>
-      <main class="detail">${detailHTML()}</main>
+      <main class="detail"></main>
     </div>
-    ${showSettings ? settingsHTML() : ""}
+    <div id="settings-host"></div>
   `;
-  bind();
+
+  searchInput = app.querySelector<HTMLInputElement>("#q")!;
+  resultsEl = app.querySelector<HTMLDivElement>(".results")!;
+  detailEl = app.querySelector<HTMLElement>(".detail")!;
+  settingsHost = app.querySelector<HTMLDivElement>("#settings-host")!;
+
+  searchInput.value = query;
+  searchInput.addEventListener("input", () => {
+    query = searchInput.value;
+    window.clearTimeout(debounce);
+    debounce = window.setTimeout(() => void runSearch(query), 280);
+  });
+  searchInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") void runSearch(searchInput.value);
+  });
+
+  app.querySelector("#open-settings")?.addEventListener("click", () => {
+    showSettings = true;
+    updateSettings();
+  });
+
+  app.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      filter = button.dataset.filter as MediaFilter;
+      app.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((item) => {
+        item.classList.toggle("active", item.dataset.filter === filter);
+      });
+      updateResults();
+    });
+  });
+}
+
+function updateResults(): void {
+  const list = filteredHits();
+  resultsEl.innerHTML = `
+    ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
+    ${error && !hits.length ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
+    ${!query.trim() && !hits.length ? `<div class="empty">한글이나 영어 제목으로 검색하세요.<br>예: 오징어게임, Squid Game</div>` : ""}
+    ${list.map((hit) => `
+      <button class="hit ${selected?.id === hit.id ? "selected" : ""}" data-id="${hit.id}">
+        <img alt="" src="${posterURL(hit.posterPath) ?? ""}" />
+        <span>
+          <b>${escapeHTML(hit.titleKO || hit.titleEN)}</b>
+          <small>${escapeHTML([hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · "))}</small>
+        </span>
+      </button>
+    `).join("")}
+  `;
+
+  resultsEl.querySelectorAll<HTMLButtonElement>("[data-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selected = hits.find((hit) => hit.id === button.dataset.id);
+      updateResults();
+      void loadSelected();
+    });
+  });
+}
+
+function updateDetail(): void {
+  detailEl.innerHTML = detailHTML();
+  detailEl.querySelector("#region")?.addEventListener("change", (event) => {
+    settings.region = (event.target as HTMLSelectElement).value;
+    updateDetail();
+  });
 }
 
 function detailHTML(): string {
@@ -93,6 +157,27 @@ function detailHTML(): string {
       </div>
       ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 API 키 설정에서 OMDb 키를 넣으면 표시됩니다.</p>` : ""}
     </section>
+    ${d.popularReviews.length ? `
+    <section class="section">
+      <h2>인기 평가</h2>
+      <div class="reviews">
+        ${d.popularReviews.map((review) => `
+          <article class="review-card">
+            <div class="review-head">
+              <div>
+                <b>${escapeHTML(review.author)}</b>
+                <span class="review-source">${escapeHTML(review.source)}</span>
+              </div>
+              ${review.likes != null ? `<span class="review-likes">추천 ${review.likes.toLocaleString()}</span>` : ""}
+              ${review.rating != null ? `<span class="review-rating">★ ${review.rating.toFixed(0)}/10</span>` : ""}
+            </div>
+            <p>${escapeHTML(review.content)}</p>
+            ${review.url ? `<a href="${review.url}" target="_blank" rel="noreferrer">원문 보기</a>` : ""}
+          </article>
+        `).join("")}
+      </div>
+      <p class="hint">Reddit 추천수 · TMDB 사용자 평점 리뷰를 함께 보여 줍니다.</p>
+    </section>` : ""}
     <section class="section">
       <h2>어디서 볼 수 있나요
         <select id="region">${REGIONS.map((item) => `<option value="${item.code}" ${item.code === region ? "selected" : ""}>${item.name}</option>`).join("")}</select>
@@ -154,45 +239,19 @@ function settingsHTML(): string {
   `;
 }
 
-function bind(): void {
-  const input = document.querySelector<HTMLInputElement>("#q");
-  input?.addEventListener("input", () => {
-    query = input.value;
-    window.clearTimeout(debounce);
-    debounce = window.setTimeout(() => void runSearch(query), 280);
-  });
-  input?.addEventListener("keydown", (event) => {
-    if (event.key === "Enter") void runSearch(query);
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => {
-    button.addEventListener("click", () => {
-      filter = button.dataset.filter as MediaFilter;
-      render();
-    });
-  });
-  document.querySelectorAll<HTMLButtonElement>("[data-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selected = hits.find((hit) => hit.id === button.dataset.id);
-      void loadSelected();
-    });
-  });
-  document.querySelector("#open-settings")?.addEventListener("click", () => {
-    showSettings = true;
-    render();
-  });
-  document.querySelector("#region")?.addEventListener("change", (event) => {
-    settings.region = (event.target as HTMLSelectElement).value;
-    render();
-  });
-  document.querySelector("#save-settings")?.addEventListener("click", () => {
-    settings.tmdb = document.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
-    settings.omdb = document.querySelector<HTMLInputElement>("#omdb-key")?.value ?? "";
+function updateSettings(): void {
+  settingsHost.innerHTML = showSettings ? settingsHTML() : "";
+  if (!showSettings) return;
+
+  settingsHost.querySelector("#save-settings")?.addEventListener("click", () => {
+    settings.tmdb = settingsHost.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
+    settings.omdb = settingsHost.querySelector<HTMLInputElement>("#omdb-key")?.value ?? "";
     showSettings = false;
-    render();
+    updateSettings();
   });
-  document.querySelector("#ping")?.addEventListener("click", async () => {
-    settings.tmdb = document.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
-    const status = document.querySelector("#settings-status");
+  settingsHost.querySelector("#ping")?.addEventListener("click", async () => {
+    settings.tmdb = settingsHost.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
+    const status = settingsHost.querySelector("#settings-status");
     try {
       await pingTMDB();
       if (status) status.textContent = "연결 성공";
@@ -207,40 +266,56 @@ async function runSearch(raw: string): Promise<void> {
   if (!trimmed) {
     hits = [];
     error = "";
-    render();
+    searching = false;
+    updateResults();
     return;
   }
   if (!settings.hasTMDB) {
     showSettings = true;
-    render();
+    updateSettings();
     return;
   }
+
+  const generation = ++searchGeneration;
+  detailGeneration += 1;
   searching = true;
   error = "";
-  render();
+  updateResults();
+
   try {
-    hits = await searchTitles(trimmed);
+    const nextHits = await searchTitles(trimmed);
+    if (generation !== searchGeneration) return;
+    if (searchInput.value.trim() !== trimmed) return;
+    hits = nextHits;
     selected = hits[0];
     searching = false;
-    render();
+    updateResults();
     if (selected) await loadSelected();
   } catch (err) {
+    if (generation !== searchGeneration) return;
     searching = false;
     error = err instanceof Error ? err.message : "검색에 실패했습니다.";
-    render();
+    updateResults();
   }
 }
 
+let detailGeneration = 0;
+
 async function loadSelected(): Promise<void> {
   if (!selected) return;
+  const generation = ++detailGeneration;
   loadingDetail = true;
-  render();
+  updateDetail();
   try {
-    detail = await fetchDetail(selected.kind, selected.tmdbID);
+    const next = await fetchDetail(selected.kind, selected.tmdbID);
+    if (generation !== detailGeneration) return;
+    detail = next;
   } catch (err) {
+    if (generation !== detailGeneration) return;
     error = err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.";
   } finally {
+    if (generation !== detailGeneration) return;
     loadingDetail = false;
-    render();
+    updateDetail();
   }
 }
