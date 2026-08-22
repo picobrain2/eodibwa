@@ -1,5 +1,5 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
-import { loadRecommendations as fetchRecommendations } from "./recommend";
+import { loadRecommendations as fetchRecommendations, type RecommendProvider } from "./recommend";
 import { containsHangul } from "./lang";
 import { translateReviews } from "./translate";
 import { settings } from "./settings";
@@ -18,19 +18,28 @@ let showSettings = !settings.hasTMDB;
 let debounce: number | undefined;
 let searchGeneration = 0;
 let recommendTrending: SearchHit[] = [];
-let recommendStreaming: SearchHit[] = [];
+let recommendProviders: RecommendProvider[] = [];
+let selectedOTT = 0;
 let loadingRecommend = false;
 let recommendLoaded = false;
+
+function allRecommendHits(): SearchHit[] {
+  return recommendProviders.flatMap((group) => group.hits);
+}
+
+function findHit(id: string): SearchHit | undefined {
+  return hits.find((hit) => hit.id === id)
+    ?? recommendTrending.find((hit) => hit.id === id)
+    ?? allRecommendHits().find((hit) => hit.id === id);
+}
 
 let searchInput!: HTMLInputElement;
 let resultsEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
 let settingsHost!: HTMLDivElement;
 
-function findHit(id: string): SearchHit | undefined {
-  return hits.find((hit) => hit.id === id)
-    ?? recommendTrending.find((hit) => hit.id === id)
-    ?? recommendStreaming.find((hit) => hit.id === id);
+function activeProviderHits(): SearchHit[] {
+  return recommendProviders.find((group) => group.id === selectedOTT)?.hits ?? [];
 }
 
 function hitButton(hit: SearchHit, selectedId?: string): string {
@@ -135,14 +144,32 @@ function recommendHTML(): string {
     return `<div class="empty">API 키를 설정하면<br>오늘 뭐 볼지 추천해 드립니다.</div>`;
   }
   if (loadingRecommend) return `<div class="loading">추천 불러오는 중…</div>`;
+  const active = recommendProviders.find((group) => group.id === selectedOTT);
   return `
     <div class="recommend">
       <h2 class="recommend-title">오늘 뭐 볼까</h2>
       <h3 class="recommend-section">요즘 인기</h3>
       ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
-      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))}에서 볼 수 있는 인기</h3>
-      ${recommendStreaming.map((hit) => hitButton(hit, selected?.id)).join("")}
+      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 인기</h3>
+      <div class="ott-tabs">
+        ${recommendProviders.map((group) => `
+          <button class="ott-tab ${group.id === selectedOTT ? "active" : ""}" data-ott="${group.id}" title="${escapeHTML(group.name)}">
+            ${group.logo ? `<img alt="" src="${posterURL(group.logo, "w92") ?? ""}" />` : `<span>${escapeHTML(group.name)}</span>`}
+          </button>
+        `).join("")}
+      </div>
+      ${active ? `<p class="ott-label">${escapeHTML(active.name)}에서 볼 수 있는 인기</p>` : ""}
+      ${activeProviderHits().map((hit) => hitButton(hit, selected?.id)).join("")}
     </div>`;
+}
+
+function bindRecommendControls(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-ott]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selectedOTT = Number(button.dataset.ott);
+      updateResults();
+    });
+  });
 }
 
 function updateResults(): void {
@@ -155,6 +182,7 @@ function updateResults(): void {
     ${list.map((hit) => hitButton(hit, selected?.id)).join("")}
   `;
   bindHits(resultsEl);
+  bindRecommendControls(resultsEl);
 }
 
 function updateDetail(): void {
@@ -399,11 +427,13 @@ export async function loadRecommendations(): Promise<void> {
   try {
     const data = await fetchRecommendations(settings.region);
     recommendTrending = data.trending;
-    recommendStreaming = data.streaming;
+    recommendProviders = data.providers;
+    selectedOTT = data.providers[0]?.id ?? 0;
     recommendLoaded = true;
   } catch {
     recommendTrending = [];
-    recommendStreaming = [];
+    recommendProviders = [];
+    selectedOTT = 0;
   } finally {
     loadingRecommend = false;
     updateResults();

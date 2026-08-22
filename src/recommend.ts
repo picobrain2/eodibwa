@@ -4,6 +4,22 @@ import type { MediaKind, SearchHit } from "./types";
 
 const TMDB = "https://api.themoviedb.org/3";
 
+export interface RecommendProvider {
+  id: number;
+  name: string;
+  logo?: string;
+  hits: SearchHit[];
+}
+
+const PROVIDER_IDS: Record<string, number[]> = {
+  KR: [8, 867, 356, 97, 337, 119, 350],
+  US: [8, 337, 350, 119, 384, 531],
+  JP: [8, 337, 350, 119, 84],
+  TW: [8, 337, 350, 119],
+  HK: [8, 337, 350, 119],
+  GB: [8, 337, 350, 119, 39],
+};
+
 interface MediaItem {
   id: number;
   media_type?: string;
@@ -17,7 +33,6 @@ interface MediaItem {
   first_air_date?: string;
   vote_average?: number;
   vote_count?: number;
-  popularity?: number;
 }
 
 interface ProviderDTO {
@@ -44,7 +59,7 @@ function yearOf(item: MediaItem): string | undefined {
   return date.length >= 4 ? date.slice(0, 4) : undefined;
 }
 
-function toHit(item: MediaItem, kind: MediaKind, english?: MediaItem): SearchHit {
+function toHit(item: MediaItem, kind: MediaKind, english?: MediaItem, provider?: { id: number; name: string; logo?: string }): SearchHit {
   const localized = item.title || item.name || "";
   const original = item.original_title || item.original_name || "";
   const enLocalized = english?.title || english?.name || "";
@@ -60,12 +75,15 @@ function toHit(item: MediaItem, kind: MediaKind, english?: MediaItem): SearchHit
     posterPath: item.poster_path || english?.poster_path,
     voteAverage: item.vote_average ?? 0,
     voteCount: item.vote_count ?? 0,
+    providerLogo: provider?.logo,
+    providerName: provider?.name,
+    providerID: provider?.id,
   };
 }
 
-function mergeLocalized(ko: MediaItem[], en: MediaItem[], kind: MediaKind): SearchHit[] {
+function mergeLocalized(ko: MediaItem[], en: MediaItem[], kind: MediaKind, provider?: { id: number; name: string; logo?: string }): SearchHit[] {
   const enByID = new Map(en.map((item) => [item.id, item]));
-  return ko.map((item) => toHit(item, kind, enByID.get(item.id)));
+  return ko.map((item) => toHit(item, kind, enByID.get(item.id), provider));
 }
 
 export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
@@ -88,57 +106,61 @@ export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
   return hits;
 }
 
-export async function fetchStreamingPopular(region: string, limit = 10): Promise<SearchHit[]> {
+async function providerCatalog(region: string): Promise<Map<number, { name: string; logo?: string }>> {
+  const [movies, tv] = await Promise.all([
+    tmdb<{ results?: ProviderDTO[] }>("/watch/providers/movie", { watch_region: region }),
+    tmdb<{ results?: ProviderDTO[] }>("/watch/providers/tv", { watch_region: region }),
+  ]);
+  const map = new Map<number, { name: string; logo?: string }>();
+  for (const list of [movies.results ?? [], tv.results ?? []]) {
+    for (const item of list) {
+      map.set(item.provider_id, { name: item.provider_name, logo: item.logo_path });
+    }
+  }
+  return map;
+}
+
+async function fetchForProvider(region: string, providerID: number, meta: { name: string; logo?: string }, limit = 8): Promise<SearchHit[]> {
   const base = {
     language: "ko-KR",
     watch_region: region,
     sort_by: "popularity.desc",
     page: "1",
+    with_watch_providers: String(providerID),
     with_watch_monetization_types: "flatrate|free|ads",
   };
+  const provider = { id: providerID, name: meta.name, logo: meta.logo };
   const [koMovies, koTV, enMovies, enTV] = await Promise.all([
     tmdb<{ results: MediaItem[] }>("/discover/movie", base),
     tmdb<{ results: MediaItem[] }>("/discover/tv", base),
     tmdb<{ results: MediaItem[] }>("/discover/movie", { ...base, language: "en-US" }),
     tmdb<{ results: MediaItem[] }>("/discover/tv", { ...base, language: "en-US" }),
   ]);
+  const seen = new Set<string>();
   const hits = [
-    ...mergeLocalized(koMovies.results ?? [], enMovies.results ?? [], "movie"),
-    ...mergeLocalized(koTV.results ?? [], enTV.results ?? [], "tv"),
+    ...mergeLocalized(koMovies.results ?? [], enMovies.results ?? [], "movie", provider),
+    ...mergeLocalized(koTV.results ?? [], enTV.results ?? [], "tv", provider),
   ]
+    .filter((hit) => {
+      if (seen.has(hit.id)) return false;
+      seen.add(hit.id);
+      return true;
+    })
     .sort((a, b) => b.voteCount - a.voteCount || b.voteAverage - a.voteAverage)
     .slice(0, limit);
   return hits;
 }
 
-export async function enrichPrimaryProvider(hits: SearchHit[], region: string): Promise<SearchHit[]> {
-  return Promise.all(hits.map(async (hit) => {
-    try {
-      const data = await tmdb<{
-        results?: Record<string, { flatrate?: ProviderDTO[]; free?: ProviderDTO[]; ads?: ProviderDTO[] }>;
-      }>(`/${hit.kind}/${hit.tmdbID}/watch/providers`);
-      const country = data.results?.[region];
-      const provider = country?.flatrate?.[0] ?? country?.free?.[0] ?? country?.ads?.[0];
-      if (!provider) return hit;
-      return {
-        ...hit,
-        providerLogo: provider.logo_path,
-        providerName: provider.provider_name,
-      };
-    } catch {
-      return hit;
-    }
-  }));
-}
-
-export async function loadRecommendations(region: string): Promise<{ trending: SearchHit[]; streaming: SearchHit[] }> {
-  const [trendingRaw, streamingRaw] = await Promise.all([
-    fetchTrending(10),
-    fetchStreamingPopular(region, 10),
-  ]);
-  const [trending, streaming] = await Promise.all([
-    enrichPrimaryProvider(trendingRaw, region),
-    enrichPrimaryProvider(streamingRaw, region),
-  ]);
-  return { trending, streaming };
+export async function loadRecommendations(region: string): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {
+  const catalog = await providerCatalog(region);
+  const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
+  const trending = await fetchTrending(10);
+  const providers: RecommendProvider[] = [];
+  for (const id of ids) {
+    const meta = catalog.get(id) ?? { name: `Provider ${id}` };
+    const hits = await fetchForProvider(region, id, meta, 8);
+    if (!hits.length) continue;
+    providers.push({ id, name: meta.name, logo: meta.logo, hits });
+  }
+  return { trending, providers };
 }

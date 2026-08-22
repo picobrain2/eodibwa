@@ -16,6 +16,7 @@ export interface SearchHit {
   voteCount: number;
   providerLogo?: string;
   providerName?: string;
+  providerID?: number;
 }
 
 export interface WatchProvider {
