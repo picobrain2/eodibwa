@@ -11,6 +11,28 @@ export interface RecommendProvider {
   hits: SearchHit[];
 }
 
+export interface RecommendGenre {
+  id: number;
+  name: string;
+  movieID?: number;
+  tvID?: number;
+}
+
+export const RECOMMEND_GENRES: RecommendGenre[] = [
+  { id: 0, name: "전체" },
+  { id: 1, name: "액션", movieID: 28, tvID: 10759 },
+  { id: 2, name: "코미디", movieID: 35, tvID: 35 },
+  { id: 3, name: "드라마", movieID: 18, tvID: 18 },
+  { id: 4, name: "SF", movieID: 878, tvID: 10765 },
+  { id: 5, name: "공포", movieID: 27, tvID: 10762 },
+  { id: 6, name: "로맨스", movieID: 10749, tvID: 10749 },
+  { id: 7, name: "애니메이션", movieID: 16, tvID: 16 },
+  { id: 8, name: "다큐", movieID: 99, tvID: 99 },
+  { id: 9, name: "스릴러", movieID: 53, tvID: 9648 },
+  { id: 10, name: "판타지", movieID: 14, tvID: 10765 },
+  { id: 11, name: "범죄", movieID: 80, tvID: 80 },
+];
+
 const PROVIDER_IDS: Record<string, number[]> = {
   KR: [8, 867, 356, 97, 337, 119, 350],
   US: [8, 337, 350, 119, 384, 531],
@@ -120,8 +142,14 @@ async function providerCatalog(region: string): Promise<Map<number, { name: stri
   return map;
 }
 
-async function fetchForProvider(region: string, providerID: number, meta: { name: string; logo?: string }, limit = 8): Promise<SearchHit[]> {
-  const base = {
+async function fetchForProvider(
+  region: string,
+  providerID: number,
+  meta: { name: string; logo?: string },
+  genre?: RecommendGenre,
+  limit = 8,
+): Promise<SearchHit[]> {
+  const base: Record<string, string> = {
     language: "ko-KR",
     watch_region: region,
     sort_by: "popularity.desc",
@@ -130,11 +158,13 @@ async function fetchForProvider(region: string, providerID: number, meta: { name
     with_watch_monetization_types: "flatrate|free|ads",
   };
   const provider = { id: providerID, name: meta.name, logo: meta.logo };
+  const movieQuery = genre?.movieID ? { ...base, with_genres: String(genre.movieID) } : base;
+  const tvQuery = genre?.tvID ? { ...base, with_genres: String(genre.tvID) } : base;
   const [koMovies, koTV, enMovies, enTV] = await Promise.all([
-    tmdb<{ results: MediaItem[] }>("/discover/movie", base),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", base),
-    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...base, language: "en-US" }),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...base, language: "en-US" }),
+    tmdb<{ results: MediaItem[] }>("/discover/movie", movieQuery),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", tvQuery),
+    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, language: "en-US" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, language: "en-US" }),
   ]);
   const seen = new Set<string>();
   const hits = [
@@ -151,16 +181,24 @@ async function fetchForProvider(region: string, providerID: number, meta: { name
   return hits;
 }
 
-export async function loadRecommendations(region: string): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {
+export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
+  const genre = RECOMMEND_GENRES.find((item) => item.id === genreID);
   const catalog = await providerCatalog(region);
   const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
-  const trending = await fetchTrending(10);
   const providers: RecommendProvider[] = [];
   for (const id of ids) {
     const meta = catalog.get(id) ?? { name: `Provider ${id}` };
-    const hits = await fetchForProvider(region, id, meta, 8);
+    const hits = await fetchForProvider(region, id, meta, genreID === 0 ? undefined : genre, 8);
     if (!hits.length) continue;
     providers.push({ id, name: meta.name, logo: meta.logo, hits });
   }
+  return providers;
+}
+
+export async function loadRecommendations(region: string, genreID = 0): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {
+  const [trending, providers] = await Promise.all([
+    fetchTrending(10),
+    fetchProviderRecommendations(region, genreID),
+  ]);
   return { trending, providers };
 }

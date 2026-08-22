@@ -1,5 +1,5 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
-import { loadRecommendations as fetchRecommendations, type RecommendProvider } from "./recommend";
+import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
 import { containsHangul } from "./lang";
 import { translateReviews } from "./translate";
 import { settings } from "./settings";
@@ -19,8 +19,9 @@ let debounce: number | undefined;
 let searchGeneration = 0;
 let recommendTrending: SearchHit[] = [];
 let recommendProviders: RecommendProvider[] = [];
-let selectedOTT = 0;
+let selectedGenreID = 0;
 let loadingRecommend = false;
+let loadingProviderRecommend = false;
 let recommendLoaded = false;
 
 function allRecommendHits(): SearchHit[] {
@@ -38,8 +39,19 @@ let resultsEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
 let settingsHost!: HTMLDivElement;
 
-function activeProviderHits(): SearchHit[] {
-  return recommendProviders.find((group) => group.id === selectedOTT)?.hits ?? [];
+function activeGenreName(): string {
+  return RECOMMEND_GENRES.find((genre) => genre.id === selectedGenreID)?.name ?? "전체";
+}
+
+function ottGroupHTML(group: RecommendProvider): string {
+  return `
+    <div class="ott-group">
+      <div class="ott-group-head">
+        ${group.logo ? `<img alt="" src="${posterURL(group.logo, "w92") ?? ""}" />` : ""}
+        <span>${escapeHTML(group.name)}</span>
+      </div>
+      ${group.hits.map((hit) => hitButton(hit, selected?.id)).join("")}
+    </div>`;
 }
 
 function hitButton(hit: SearchHit, selectedId?: string): string {
@@ -144,30 +156,31 @@ function recommendHTML(): string {
     return `<div class="empty">API 키를 설정하면<br>오늘 뭐 볼지 추천해 드립니다.</div>`;
   }
   if (loadingRecommend) return `<div class="loading">추천 불러오는 중…</div>`;
-  const active = recommendProviders.find((group) => group.id === selectedOTT);
+  const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
   return `
     <div class="recommend">
       <h2 class="recommend-title">오늘 뭐 볼까</h2>
-      <h3 class="recommend-section">요즘 인기</h3>
-      ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
-      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 인기</h3>
-      <div class="ott-tabs">
-        ${recommendProviders.map((group) => `
-          <button class="ott-tab ${group.id === selectedOTT ? "active" : ""}" data-ott="${group.id}" title="${escapeHTML(group.name)}">
-            ${group.logo ? `<img alt="" src="${posterURL(group.logo, "w92") ?? ""}" />` : `<span>${escapeHTML(group.name)}</span>`}
-          </button>
+      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 인기${genreLabel}</h3>
+      <div class="genre-tabs">
+        ${RECOMMEND_GENRES.map((genre) => `
+          <button class="genre-tab ${genre.id === selectedGenreID ? "active" : ""}" data-genre="${genre.id}">${escapeHTML(genre.name)}</button>
         `).join("")}
       </div>
-      ${active ? `<p class="ott-label">${escapeHTML(active.name)}에서 볼 수 있는 인기</p>` : ""}
-      ${activeProviderHits().map((hit) => hitButton(hit, selected?.id)).join("")}
+      ${loadingProviderRecommend ? `<div class="loading inline">OTT별 순위 불러오는 중…</div>` : ""}
+      ${recommendProviders.map((group) => ottGroupHTML(group)).join("")}
+      ${!loadingProviderRecommend && !recommendProviders.length ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
+      <h3 class="recommend-section">요즘 인기</h3>
+      ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
     </div>`;
 }
 
 function bindRecommendControls(root: ParentNode): void {
-  root.querySelectorAll<HTMLButtonElement>("[data-ott]").forEach((button) => {
+  root.querySelectorAll<HTMLButtonElement>("[data-genre]").forEach((button) => {
     button.addEventListener("click", () => {
-      selectedOTT = Number(button.dataset.ott);
-      updateResults();
+      const next = Number(button.dataset.genre);
+      if (next === selectedGenreID || loadingProviderRecommend) return;
+      selectedGenreID = next;
+      void reloadProviderRecommendations();
     });
   });
 }
@@ -425,17 +438,29 @@ export async function loadRecommendations(): Promise<void> {
   loadingRecommend = true;
   updateResults();
   try {
-    const data = await fetchRecommendations(settings.region);
+    const data = await fetchRecommendations(settings.region, selectedGenreID);
     recommendTrending = data.trending;
     recommendProviders = data.providers;
-    selectedOTT = data.providers[0]?.id ?? 0;
     recommendLoaded = true;
   } catch {
     recommendTrending = [];
     recommendProviders = [];
-    selectedOTT = 0;
   } finally {
     loadingRecommend = false;
+    updateResults();
+  }
+}
+
+async function reloadProviderRecommendations(): Promise<void> {
+  if (!settings.hasTMDB || loadingProviderRecommend) return;
+  loadingProviderRecommend = true;
+  updateResults();
+  try {
+    recommendProviders = await fetchProviderRecommendations(settings.region, selectedGenreID);
+  } catch {
+    recommendProviders = [];
+  } finally {
+    loadingProviderRecommend = false;
     updateResults();
   }
 }
