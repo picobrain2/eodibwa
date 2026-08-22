@@ -477,13 +477,10 @@ async function fetchGenreMedia(
     watch_region: region,
     with_watch_providers: String(providerID),
     with_watch_monetization_types: "flatrate",
-    sort_by: genre.tvID === TV_GENRE_REALITY ? "first_air_date.desc" : "popularity.desc",
+    sort_by: "popularity.desc",
     page: "1",
   };
   if (region === "KR" && !RELAXED_ORIGIN_PROVIDERS.has(providerID)) query.with_origin_country = "KR";
-  if (genre.tvID === TV_GENRE_REALITY && region === "KR" && providerID === 1883) {
-    applyRecentDateFilter(query, "tv", "premiere");
-  }
 
   const kinds: MediaKind[] = [
     ...(genre.movieID ? (["movie"] as MediaKind[]) : []),
@@ -507,12 +504,12 @@ async function fetchTvingVarietyMedia(): Promise<DiscoverRow[]> {
     with_watch_monetization_types: "flatrate",
     with_genres: String(TV_GENRE_REALITY),
     with_origin_country: "KR",
-    sort_by: "first_air_date.desc",
+    sort_by: "popularity.desc",
     page: "1",
   };
-  applyRecentDateFilter(query, "tv", "premiere");
+  applyRecentDateFilter(query, "tv", "air");
 
-  const { ko, en } = await fetchDiscoverPages("tv", query, 1);
+  const { ko, en } = await fetchDiscoverPages("tv", query);
   return rowsFromDiscover(ko, en, "tv");
 }
 
@@ -589,13 +586,7 @@ async function fetchDiscoverSupplement(
 
   if (genre && (genre.tvID || genre.movieID) && !(genre.tvID && genre.movieID)) {
     const rows = await fetchGenreMedia(region, providerID, genre);
-    for (const hit of rowsToHits(
-      rows,
-      provider,
-      seen,
-      limit,
-      genre.tvID === TV_GENRE_REALITY ? "preserve" : "votes",
-    )) {
+    for (const hit of rowsToHits(rows, provider, seen, limit)) {
       hits.push(hit);
       if (hits.length >= limit) return hits;
     }
@@ -613,7 +604,7 @@ async function fetchDiscoverSupplement(
   // Variety shows (예능) have very low vote_count on TMDB — fetch separately for TVING "전체".
   if (providerID === 1883 && region === "KR" && !genre) {
     const varietyRows = await fetchTvingVarietyMedia();
-    for (const hit of rowsToHits(varietyRows, provider, seen, Math.min(TVING_VARIETY_SLOTS, limit), "preserve")) {
+    for (const hit of rowsToHits(varietyRows, provider, seen, Math.min(TVING_VARIETY_SLOTS, limit), "popularity")) {
       hits.push(hit);
       if (hits.length >= limit) return hits;
     }
@@ -659,7 +650,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v5`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v6`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
