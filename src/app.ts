@@ -1,5 +1,5 @@
-import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
-import { motnCacheFresh, pingMOTN } from "./motn";
+import { fetchDetail, fetchPopularReviews, providerLink, searchTitles, watchaSearchURL } from "./api";
+import { motnCacheFresh } from "./motn";
 import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
@@ -16,7 +16,6 @@ let detail: TitleDetail | undefined;
 let searching = false;
 let loadingDetail = false;
 let error = "";
-let showSettings = !settings.hasTMDB;
 let debounce: number | undefined;
 let searchGeneration = 0;
 let recommendTrending: SearchHit[] = [];
@@ -67,7 +66,6 @@ function findHit(id: string): SearchHit | undefined {
 let searchInput!: HTMLInputElement;
 let resultsEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
-let settingsHost!: HTMLDivElement;
 let recommendHost!: HTMLDivElement;
 let detailHost!: HTMLDivElement;
 
@@ -130,11 +128,6 @@ function goToMainHome(): void {
   error = "";
   searchGeneration += 1;
   detailGeneration += 1;
-
-  if (showSettings) {
-    showSettings = false;
-    updateSettings();
-  }
 
   if (isMobileLayout()) {
     showDetailPage = false;
@@ -295,7 +288,6 @@ export function render(): void {
   updateResults();
   updateDetail();
   updateRecommendPage();
-  updateSettings();
 }
 
 function mount(): void {
@@ -311,13 +303,11 @@ function mount(): void {
               <button data-filter="${item}" class="${filter === item ? "active" : ""}">${item === "all" ? "전체" : item === "movie" ? "영화" : "시리즈"}</button>
             `).join("")}
           </div>
-          <button class="linkish" id="open-settings">API 키 설정</button>
         </div>
         <div class="results"></div>
       </aside>
       <main class="detail"></main>
     </div>
-    <div id="settings-host"></div>
     <div id="recommend-host"></div>
     <div id="detail-host"></div>
   `;
@@ -325,7 +315,6 @@ function mount(): void {
   searchInput = app.querySelector<HTMLInputElement>("#q")!;
   resultsEl = app.querySelector<HTMLDivElement>(".results")!;
   detailEl = app.querySelector<HTMLElement>(".detail")!;
-  settingsHost = app.querySelector<HTMLDivElement>("#settings-host")!;
   recommendHost = app.querySelector<HTMLDivElement>("#recommend-host")!;
   detailHost = app.querySelector<HTMLDivElement>("#detail-host")!;
 
@@ -342,11 +331,6 @@ function mount(): void {
   });
 
   bindHomeButtons();
-
-  app.querySelector("#open-settings")?.addEventListener("click", () => {
-    showSettings = true;
-    updateSettings();
-  });
 
   app.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => {
     button.addEventListener("click", () => {
@@ -382,7 +366,7 @@ function mount(): void {
 
 function recommendHTML(options?: { hideTitle?: boolean }): string {
   if (!settings.hasTMDB) {
-    return `<div class="empty">API 키를 설정하면<br>오늘 뭐 볼지 추천해 드립니다.</div>`;
+    return `<div class="empty">추천을 불러올 수 없습니다.</div>`;
   }
   if (loadingRecommend) return `<div class="loading">추천 불러오는 중…</div>`;
   const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
@@ -392,7 +376,7 @@ function recommendHTML(options?: { hideTitle?: boolean }): string {
       : (loadingRecommend || loadingProviderRecommend)
         ? "Netflix·Disney+ 공식 Top 10을 불러오는 중…"
         : "Netflix·Disney+ Top 10을 불러오지 못해 TMDB 급상승으로 표시합니다.")
-    : "TVING·Wavve·Watcha·쿠팡플레이는 TMDB 인기작, Netflix 등은 Movie of the Night 키 설정 시 공식 Top 10을 사용합니다.";
+    : "TVING·Wavve·Watcha·쿠팡플레이는 TMDB 인기작, Netflix 등은 Movie of the Night 공식 Top 10을 사용합니다.";
   return `
     <div class="recommend">
       ${options?.hideTitle ? "" : `<h2 class="recommend-title">오늘 뭐 볼까</h2>`}
@@ -581,7 +565,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
         ${d.metacritic ? badge("Metacritic", d.metacritic, undefined, "meta") : ""}
         ${d.tvmaze ? badge("TVMaze", d.tvmaze, "시리즈", "tvmaze") : ""}
       </div>
-      ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 API 키 설정에서 OMDb 키를 넣으면 표시됩니다.</p>` : ""}
+      ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 OMDb 연동 시 표시됩니다.</p>` : ""}
     </section>
     ${loadingReviews ? `
     <section class="section">
@@ -658,67 +642,6 @@ function reviewsSectionHTML(d: TitleDetail): string {
     </section>`;
 }
 
-function settingsHTML(): string {
-  return `
-    <div class="modal-bg">
-      <div class="modal">
-        <h2>API 키 설정</h2>
-        <p>키는 이 브라우저에만 저장됩니다. 배포본에는 기본 키가 포함되어 있어 바로 검색할 수 있습니다.</p>
-        <label>TMDB API 키</label>
-        <input id="tmdb-key" value="${escapeHTML(settings.tmdb)}" placeholder="TMDB API Key 또는 Read Access Token" />
-        <div class="row">
-          <a class="ghost" href="https://www.themoviedb.org/settings/api" target="_blank" rel="noreferrer">TMDB 키 받기</a>
-          <button class="ghost" id="ping">연결 확인</button>
-        </div>
-        <label>OMDb API 키 (선택)</label>
-        <input id="omdb-key" value="${escapeHTML(settings.omdb)}" placeholder="예: 9fa86b4e" />
-        <a class="ghost" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noreferrer">OMDb 키 받기</a>
-        <label>Movie of the Night API 키 (선택)</label>
-        <input id="motn-key" value="${escapeHTML(settings.motn)}" placeholder="motn-key-v4-..." />
-        <div class="row">
-          <a class="ghost" href="https://www.movieofthenight.com/about/api" target="_blank" rel="noreferrer">MOTN 키 받기</a>
-          <button class="ghost" id="ping-motn">MOTN 연결 확인</button>
-        </div>
-        <p id="settings-status" class="hint"></p>
-        <button class="primary" id="save-settings">완료</button>
-      </div>
-    </div>
-  `;
-}
-
-function updateSettings(): void {
-  settingsHost.innerHTML = showSettings ? settingsHTML() : "";
-  if (!showSettings) return;
-
-  settingsHost.querySelector("#save-settings")?.addEventListener("click", () => {
-    settings.tmdb = settingsHost.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
-    settings.omdb = settingsHost.querySelector<HTMLInputElement>("#omdb-key")?.value ?? "";
-    settings.motn = settingsHost.querySelector<HTMLInputElement>("#motn-key")?.value ?? "";
-    showSettings = false;
-    updateSettings();
-  });
-  settingsHost.querySelector("#ping")?.addEventListener("click", async () => {
-    settings.tmdb = settingsHost.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
-    const status = settingsHost.querySelector("#settings-status");
-    try {
-      await pingTMDB();
-      if (status) status.textContent = "TMDB 연결 성공";
-    } catch (err) {
-      if (status) status.textContent = err instanceof Error ? err.message : "TMDB 연결 실패";
-    }
-  });
-  settingsHost.querySelector("#ping-motn")?.addEventListener("click", async () => {
-    settings.motn = settingsHost.querySelector<HTMLInputElement>("#motn-key")?.value ?? "";
-    const status = settingsHost.querySelector("#settings-status");
-    try {
-      await pingMOTN();
-      if (status) status.textContent = "MOTN 연결 성공";
-    } catch (err) {
-      if (status) status.textContent = err instanceof Error ? err.message : "MOTN 연결 실패";
-    }
-  });
-}
-
 async function runSearch(raw: string): Promise<void> {
   const trimmed = raw.trim();
   if (!trimmed) {
@@ -729,8 +652,8 @@ async function runSearch(raw: string): Promise<void> {
     return;
   }
   if (!settings.hasTMDB) {
-    showSettings = true;
-    updateSettings();
+    error = "검색을 사용할 수 없습니다.";
+    updateResults();
     return;
   }
 
