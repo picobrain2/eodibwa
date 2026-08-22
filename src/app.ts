@@ -1,4 +1,5 @@
-import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles } from "./api";
+import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
+import { containsHangul } from "./lang";
 import { settings } from "./settings";
 import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
 
@@ -158,32 +159,11 @@ function detailHTML(): string {
       </div>
       ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 API 키 설정에서 OMDb 키를 넣으면 표시됩니다.</p>` : ""}
     </section>
-    ${loadingReviews && !d.popularReviews.length ? `
+    ${loadingReviews ? `
     <section class="section">
       <h2>인기 평가</h2>
       <div class="loading">평가 불러오는 중…</div>
-    </section>` : ""}
-    ${d.popularReviews.length ? `
-    <section class="section">
-      <h2>인기 평가</h2>
-      <div class="reviews">
-        ${d.popularReviews.map((review) => `
-          <article class="review-card">
-            <div class="review-head">
-              <div>
-                <b>${escapeHTML(review.author)}</b>
-                <span class="review-source">${escapeHTML(review.source)}</span>
-              </div>
-              ${review.likes != null ? `<span class="review-likes">추천 ${review.likes.toLocaleString()}</span>` : ""}
-              ${review.rating != null ? `<span class="review-rating">★ ${review.rating.toFixed(0)}/10</span>` : ""}
-            </div>
-            <p>${escapeHTML(review.content)}</p>
-            ${review.url ? `<a href="${review.url}" target="_blank" rel="noreferrer">원문 보기</a>` : ""}
-          </article>
-        `).join("")}
-      </div>
-      <p class="hint">TMDB 사용자 평점 리뷰를 보여 줍니다.</p>
-    </section>` : ""}
+    </section>` : reviewsSectionHTML(d)}
     <section class="section">
       <h2>어디서 볼 수 있나요
         <select id="region">${REGIONS.map((item) => `<option value="${item.code}" ${item.code === region ? "selected" : ""}>${item.name}</option>`).join("")}</select>
@@ -221,6 +201,34 @@ function detailHTML(): string {
 
 function badge(label: string, value: string, sub: string | undefined, klass: string): string {
   return `<div class="badge"><small>${label}</small><div class="${klass}"><b>${escapeHTML(value)}</b></div>${sub ? `<small>${escapeHTML(sub)}</small>` : ""}</div>`;
+}
+
+function reviewsSectionHTML(d: TitleDetail): string {
+  const hasKorean = d.popularReviews.some((review) => containsHangul(review.content));
+  const watcha = watchaSearchURL(d.titleKO, d.titleEN);
+  return `
+    <section class="section">
+      <h2>인기 평가</h2>
+      ${d.popularReviews.length ? `
+      <div class="reviews">
+        ${d.popularReviews.map((review) => `
+          <article class="review-card">
+            <div class="review-head">
+              <div>
+                <b>${escapeHTML(review.author)}</b>
+                <span class="review-source">${escapeHTML(review.source)}</span>
+              </div>
+              ${review.likes != null ? `<span class="review-likes">추천 ${review.likes.toLocaleString()}</span>` : ""}
+              ${review.rating != null ? `<span class="review-rating">★ ${review.rating.toFixed(0)}/10</span>` : ""}
+            </div>
+            <p>${escapeHTML(review.content)}</p>
+            ${review.url ? `<a href="${review.url}" target="_blank" rel="noreferrer">원문 보기</a>` : ""}
+          </article>
+        `).join("")}
+      </div>` : `<p class="hint">TMDB에 등록된 한국어 리뷰가 없습니다.</p>`}
+      ${!hasKorean ? `<p class="hint"><a href="${watcha}" target="_blank" rel="noreferrer">왓챠피디아에서 한국어 평가 보기</a></p>` : ""}
+      <p class="hint">한글 리뷰를 우선 표시합니다.</p>
+    </section>`;
 }
 
 function settingsHTML(): string {

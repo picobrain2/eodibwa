@@ -1,4 +1,4 @@
-import { hangulSpaceVariants, isStrongMatch, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, hangulSpaceVariants, isStrongMatch, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
 
@@ -259,6 +259,19 @@ export async function fetchPopularReviews(kind: MediaKind, id: number, _titleKO 
   return fetchPopularReviewsInternal(kind, id);
 }
 
+export function watchaSearchURL(titleKO: string, titleEN: string): string {
+  const query = pickKorean([titleKO, titleEN]) || titleEN || titleKO;
+  return `https://pedia.watcha.com/ko-KR/search?query=${encodeURIComponent(query)}`;
+}
+
+function sortReviews(reviews: PopularReview[]): PopularReview[] {
+  return [...reviews].sort((a, b) => {
+    const ko = Number(containsHangul(b.content)) - Number(containsHangul(a.content));
+    if (ko !== 0) return ko;
+    return (b.rating ?? 0) - (a.rating ?? 0) || (b.likes ?? 0) - (a.likes ?? 0);
+  });
+}
+
 interface ReviewItemDTO {
   id?: string;
   author?: string;
@@ -298,12 +311,12 @@ async function fetchTMDBReviews(kind: MediaKind, id: number): Promise<PopularRev
       });
     }
   }
-  return reviews.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
+  return sortReviews(reviews);
 }
 
 async function fetchPopularReviewsInternal(kind: MediaKind, id: number): Promise<PopularReview[]> {
   const reviews = await fetchTMDBReviews(kind, id);
-  return reviews.slice(0, 5);
+  return sortReviews(reviews).slice(0, 5);
 }
 
 async function enrichOMDb(detail: TitleDetail): Promise<void> {
