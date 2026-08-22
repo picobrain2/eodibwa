@@ -88,9 +88,14 @@ const CATALOG_TTL_MS = 60 * 60 * 1000;
 const CHART_TTL_MS = 30 * 60 * 1000;
 const CHART_SIZE = 36;
 const BATCH_SIZE = 6;
+const DISPLAY_LIMIT = 8;
+const CANDIDATE_LIMIT = 24;
 const RECENT_AIR_DAYS = 30;
 const RECENT_PREMIERE_DAYS = 180;
 const RECENT_MOVIE_DAYS = 90;
+
+/** Major KR broadcasters whose shows stream on TVING. */
+const TVING_BROADCAST_NETWORKS = "866|885|813|989|2710";
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -391,15 +396,54 @@ async function fetchDiscoverMedia(
   }
   applyRecentDateFilter(query, kind, mode);
 
-  const [ko, en] = await Promise.all([
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, query),
-    tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, language: "en-US" }),
+  const [ko1, ko2, en1] = await Promise.all([
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, { ...query, page: "1" }),
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, { ...query, page: "2" }),
+    tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, page: "1", language: "en-US" }),
   ]);
 
-  const enByID = new Map((en.results ?? []).map((item) => [item.id, item]));
-  return (ko.results ?? []).map((item) => ({
+  const enByID = new Map((en1.results ?? []).map((item) => [item.id, item]));
+  const merged = new Map<number, MediaItem & { popularity?: number }>();
+  for (const item of [...(ko1.results ?? []), ...(ko2.results ?? [])]) merged.set(item.id, item);
+
+  return [...merged.values()].map((item) => ({
     item,
     kind,
+    english: enByID.get(item.id),
+  }));
+}
+
+async function fetchTvingBroadcastMedia(
+  genre: RecommendGenre | undefined,
+): Promise<DiscoverRow[]> {
+  const query: Record<string, string> = {
+    language: "ko-KR",
+    watch_region: "KR",
+    with_watch_providers: "1883",
+    with_watch_monetization_types: "flatrate",
+    with_networks: TVING_BROADCAST_NETWORKS,
+    with_origin_country: "KR",
+    sort_by: "vote_count.desc",
+    "vote_count.gte": "3",
+    page: "1",
+  };
+  const genreID = genre?.tvID;
+  if (genreID) query.with_genres = String(genreID);
+  applyRecentDateFilter(query, "tv", "premiere");
+
+  const [ko1, ko2, en1] = await Promise.all([
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "1" }),
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "2" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...query, page: "1", language: "en-US" }),
+  ]);
+
+  const enByID = new Map((en1.results ?? []).map((item) => [item.id, item]));
+  const merged = new Map<number, MediaItem & { popularity?: number }>();
+  for (const item of [...(ko1.results ?? []), ...(ko2.results ?? [])]) merged.set(item.id, item);
+
+  return [...merged.values()].map((item) => ({
+    item,
+    kind: "tv" as MediaKind,
     english: enByID.get(item.id),
   }));
 }
@@ -454,6 +498,15 @@ async function fetchDiscoverSupplement(
       }
     }
   }
+
+  if (providerID === 1883 && region === "KR" && hits.length < limit && (!genre || genre.tvID)) {
+    const rows = await fetchTvingBroadcastMedia(genre);
+    for (const hit of rowsToHits(rows, provider, seen, limit - hits.length)) {
+      hits.push(hit);
+      if (hits.length >= limit) return hits;
+    }
+  }
+
   return hits;
 }
 
@@ -464,27 +517,27 @@ async function fetchProviderPopularHits(
   genre: RecommendGenre | undefined,
   entries: ChartEntry[],
   catalog: Map<number, { name: string; logo?: string }>,
-  limit = 8,
+  limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v2`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v3`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
   const seen = new Set<string>();
   const hits: SearchHit[] = [];
 
+  // KR OTT: discover first so global trending does not fill slots with cross-platform titles.
+  hits.push(...await fetchDiscoverSupplement(region, providerID, provider, genre, seen, limit));
+
   for (const hit of projectSingleProvider(entries, catalog, genre, providerID, limit)) {
+    if (seen.has(hit.id)) continue;
     seen.add(hit.id);
     hits.push(hit);
+    if (hits.length >= limit) break;
   }
 
-  if (hits.length < limit) {
-    hits.push(...await fetchDiscoverSupplement(region, providerID, provider, genre, seen, limit - hits.length));
-  }
-
-  const result = hits.slice(0, limit);
-  discoverCache.set(cacheKey, { hits: result, expires: Date.now() + CHART_TTL_MS });
-  return result;
+  discoverCache.set(cacheKey, { hits, expires: Date.now() + CHART_TTL_MS });
+  return hits;
 }
 
 async function dedupeExclusiveProviders(
@@ -519,7 +572,7 @@ async function dedupeExclusiveProviders(
   return providers
     .map((group) => ({
       ...group,
-      hits: group.hits.filter((hit) => owner.get(hit.id) === group.id),
+      hits: group.hits.filter((hit) => owner.get(hit.id) === group.id).slice(0, DISPLAY_LIMIT),
     }))
     .filter((group) => group.hits.length > 0);
 }
@@ -541,7 +594,7 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
 
       if (motnService) {
         try {
-          const hits = await fetchMotnProviderHits(region, motnService, provider, genre);
+          const hits = await fetchMotnProviderHits(region, motnService, provider, genre, CANDIDATE_LIMIT);
           if (hits.length) return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
         } catch {
           // fall back to TMDB for this provider
@@ -554,7 +607,7 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
         return null;
       }
 
-      const hits = projectSingleProvider(entries, catalog, genre, id);
+      const hits = projectSingleProvider(entries, catalog, genre, id, CANDIDATE_LIMIT);
       if (!hits.length) return null;
       return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
     }),
