@@ -243,7 +243,10 @@ function theaterBadgeHTML(): string {
 }
 
 function hitButton(hit: SearchHit, selectedId?: string): string {
-  const meta = [hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · ");
+  const personMeta = hit.matchedPerson
+    ? `${hit.matchedPerson}${hit.matchedRole ? ` · ${hit.matchedRole}` : ""}`
+    : "";
+  const meta = [personMeta, hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · ");
   const provider = hit.providerLogo
     ? `<img class="hit-provider" alt="" title="${escapeHTML(hit.providerName ?? "")}" src="${posterURL(hit.providerLogo, "w92") ?? ""}" />`
     : (hit.providerName ? `<span class="hit-provider-name">${escapeHTML(hit.providerName)}</span>` : "");
@@ -301,7 +304,7 @@ function mount(): void {
       <aside class="sidebar">
         <div class="search-box">
           <button type="button" class="app-title go-home" id="go-home">어디봐</button>
-          <input id="q" placeholder="드라마 · 영화 · 예능 (한글/영어)" />
+          <input id="q" placeholder="제목 · 출연진 · 감독 (한글/영어)" />
           <div class="filters">
             ${(["all", "movie", "tv"] as MediaFilter[]).map((item) => `
               <button data-filter="${item}" class="${filter === item ? "active" : ""}">${item === "all" ? "전체" : item === "movie" ? "영화" : "시리즈"}</button>

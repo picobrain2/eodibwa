@@ -18,6 +18,8 @@ export interface SearchHit {
   providerName?: string;
   providerID?: number;
   inTheaters?: boolean;
+  matchedPerson?: string;
+  matchedRole?: string;
 }
 
 export interface WatchProvider {
