@@ -137,7 +137,7 @@ function settingsHTML(): string {
     <div class="modal-bg">
       <div class="modal">
         <h2>API 키 설정</h2>
-        <p>키는 이 브라우저에만 저장됩니다. GitHub Pages에는 올라가지 않습니다.</p>
+        <p>키는 이 브라우저에만 저장됩니다. 배포본에는 기본 키가 포함되어 있어 바로 검색할 수 있습니다.</p>
         <label>TMDB API 키</label>
         <input id="tmdb-key" value="${escapeHTML(settings.tmdb)}" placeholder="TMDB API Key 또는 Read Access Token" />
         <div class="row">

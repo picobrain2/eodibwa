@@ -17,6 +17,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      VITE_TMDB_KEY: a4cce0ad04241c7620b2356ec6689590
+      VITE_OMDB_KEY: 9fa86b4e
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

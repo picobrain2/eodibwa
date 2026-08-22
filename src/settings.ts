@@ -4,15 +4,18 @@ const KEYS = {
   region: "eodibwa.region",
 };
 
+const DEFAULT_TMDB = import.meta.env.VITE_TMDB_KEY ?? "";
+const DEFAULT_OMDB = import.meta.env.VITE_OMDB_KEY ?? "";
+
 export const settings = {
   get tmdb(): string {
-    return localStorage.getItem(KEYS.tmdb) ?? "";
+    return localStorage.getItem(KEYS.tmdb) ?? DEFAULT_TMDB;
   },
   set tmdb(value: string) {
     localStorage.setItem(KEYS.tmdb, value.trim());
   },
   get omdb(): string {
-    return localStorage.getItem(KEYS.omdb) ?? "";
+    return localStorage.getItem(KEYS.omdb) ?? DEFAULT_OMDB;
   },
   set omdb(value: string) {
     localStorage.setItem(KEYS.omdb, value.trim());
