@@ -32,6 +32,7 @@ export const RECOMMEND_GENRES: RecommendGenre[] = [
   { id: 9, name: "스릴러", movieID: 53, tvID: 9648 },
   { id: 10, name: "판타지", movieID: 14, tvID: 10765 },
   { id: 11, name: "범죄", movieID: 80, tvID: 80 },
+  { id: 12, name: "예능", tvID: 10764 },
 ];
 
 const PROVIDER_IDS: Record<string, number[]> = {
@@ -96,6 +97,10 @@ const RECENT_MOVIE_DAYS = 90;
 
 /** Major KR broadcasters whose shows stream on TVING. */
 const TVING_BROADCAST_NETWORKS = "866|885|813|989|2710";
+
+/** TMDB Reality — Korean variety / unscripted (예능). */
+const TV_GENRE_REALITY = 10764;
+const TVING_VARIETY_SLOTS = 4;
 
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
@@ -413,6 +418,36 @@ async function fetchDiscoverMedia(
   }));
 }
 
+async function fetchTvingVarietyMedia(): Promise<DiscoverRow[]> {
+  const query: Record<string, string> = {
+    language: "ko-KR",
+    watch_region: "KR",
+    with_watch_providers: "1883",
+    with_watch_monetization_types: "flatrate",
+    with_genres: String(TV_GENRE_REALITY),
+    with_origin_country: "KR",
+    sort_by: "popularity.desc",
+    page: "1",
+  };
+  applyRecentDateFilter(query, "tv", "air");
+
+  const [ko1, ko2, en1] = await Promise.all([
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "1" }),
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "2" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...query, page: "1", language: "en-US" }),
+  ]);
+
+  const enByID = new Map((en1.results ?? []).map((item) => [item.id, item]));
+  const merged = new Map<number, MediaItem & { popularity?: number }>();
+  for (const item of [...(ko1.results ?? []), ...(ko2.results ?? [])]) merged.set(item.id, item);
+
+  return [...merged.values()].map((item) => ({
+    item,
+    kind: "tv" as MediaKind,
+    english: enByID.get(item.id),
+  }));
+}
+
 async function fetchTvingBroadcastMedia(
   genre: RecommendGenre | undefined,
 ): Promise<DiscoverRow[]> {
@@ -453,13 +488,20 @@ function rowsToHits(
   provider: { id: number; name: string; logo?: string },
   seen: Set<string>,
   limit: number,
+  sort: "votes" | "popularity" | "preserve" = "votes",
 ): SearchHit[] {
   const hits: SearchHit[] = [];
-  for (const row of rows.sort((a, b) => {
-    const left = (b.item.vote_count ?? 0) * 10 + (b.item.popularity ?? 0);
-    const right = (a.item.vote_count ?? 0) * 10 + (a.item.popularity ?? 0);
-    return left - right;
-  })) {
+  const ordered = sort === "preserve"
+    ? rows
+    : rows.sort((a, b) => {
+      if (sort === "popularity") {
+        return (b.item.popularity ?? 0) - (a.item.popularity ?? 0);
+      }
+      const left = (b.item.vote_count ?? 0) * 10 + (b.item.popularity ?? 0);
+      const right = (a.item.vote_count ?? 0) * 10 + (a.item.popularity ?? 0);
+      return left - right;
+    });
+  for (const row of ordered) {
     const key = `${row.kind}-${row.item.id}`;
     if (seen.has(key)) continue;
     seen.add(key);
@@ -488,6 +530,16 @@ async function fetchDiscoverSupplement(
   const mediaKinds = kinds.length ? kinds : (["tv", "movie"] as MediaKind[]);
 
   const hits: SearchHit[] = [];
+
+  // Variety shows (예능) have very low vote_count on TMDB — fetch separately for TVING "전체".
+  if (providerID === 1883 && region === "KR" && !genre) {
+    const varietyRows = await fetchTvingVarietyMedia();
+    for (const hit of rowsToHits(varietyRows, provider, seen, Math.min(TVING_VARIETY_SLOTS, limit), "popularity")) {
+      hits.push(hit);
+      if (hits.length >= limit) return hits;
+    }
+  }
+
   for (const kind of mediaKinds) {
     const modes: Array<"premiere" | "air" | "release"> = kind === "tv" ? ["premiere", "air"] : ["release"];
     for (const mode of modes) {
@@ -519,7 +571,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v3`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v4`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
