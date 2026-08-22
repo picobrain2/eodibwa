@@ -57,7 +57,11 @@ function yearOf(item: SearchItem): string | undefined {
   return date.length >= 4 ? date.slice(0, 4) : undefined;
 }
 
-function toHit(item: SearchItem, english?: SearchItem, extras?: Pick<SearchHit, "matchedPerson" | "matchedRole">): SearchHit | undefined {
+function toHit(
+  item: SearchItem,
+  english?: SearchItem,
+  extras?: Pick<SearchHit, "matchedPerson" | "matchedPersonNames" | "matchedRole">,
+): SearchHit | undefined {
   const kind = item.media_type === "movie" || item.media_type === "tv" ? item.media_type : undefined;
   if (!kind) return undefined;
   const localized = item.title || item.name || "";
@@ -76,16 +80,25 @@ function toHit(item: SearchItem, english?: SearchItem, extras?: Pick<SearchHit, 
     voteAverage: item.vote_average ?? 0,
     voteCount: item.vote_count ?? 0,
     matchedPerson: extras?.matchedPerson,
+    matchedPersonNames: extras?.matchedPersonNames,
     matchedRole: extras?.matchedRole,
   };
 }
 
-function personNames(person: PersonSearchItem): string[] {
-  return [person.name, person.original_name].filter((name): name is string => Boolean(name));
+interface PersonCandidate {
+  id: number;
+  names: string[];
 }
 
-function personMatchScore(person: PersonSearchItem, queries: string[]): number {
-  const names = personNames(person);
+function addPersonNames(map: Map<number, PersonCandidate>, person: PersonSearchItem): void {
+  const row = map.get(person.id) ?? { id: person.id, names: [] };
+  for (const name of [person.name, person.original_name]) {
+    if (name && !row.names.includes(name)) row.names.push(name);
+  }
+  map.set(person.id, row);
+}
+
+function personMatchScore(names: string[], queries: string[]): number {
   return Math.max(0, ...queries.map((query) => relevance(names, query)));
 }
 
@@ -97,13 +110,13 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
     ]),
   );
 
-  const peopleByID = new Map<number, PersonSearchItem>();
+  const peopleByID = new Map<number, PersonCandidate>();
   for (const page of pages) {
-    for (const person of page.results ?? []) peopleByID.set(person.id, person);
+    for (const person of page.results ?? []) addPersonNames(peopleByID, person);
   }
 
   const matched = [...peopleByID.values()]
-    .map((person) => ({ person, score: personMatchScore(person, queries) }))
+    .map((person) => ({ person, score: personMatchScore(person.names, queries) }))
     .filter((row) => row.score >= PERSON_MATCH_MIN)
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_PERSON_LOOKUPS);
@@ -121,11 +134,15 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
 
   for (let index = 0; index < matched.length; index++) {
     const { person } = matched[index];
-    const personName = pickKorean(personNames(person)) || person.name || person.original_name || "";
+    const personName = pickKorean(person.names) || person.names[0] || "";
     const credits = creditPages[index];
 
     for (const item of credits.cast ?? []) {
-      const hit = toHit(item, undefined, { matchedPerson: personName, matchedRole: item.character?.trim() || "출연" });
+      const hit = toHit(item, undefined, {
+        matchedPerson: personName,
+        matchedPersonNames: person.names,
+        matchedRole: item.character?.trim() || "출연",
+      });
       if (!hit || seen.has(hit.id)) continue;
       seen.add(hit.id);
       hits.push(hit);
@@ -133,7 +150,11 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
 
     for (const item of credits.crew ?? []) {
       if (!item.job || !DIRECTOR_JOBS.has(item.job)) continue;
-      const hit = toHit(item, undefined, { matchedPerson: personName, matchedRole: "감독" });
+      const hit = toHit(item, undefined, {
+        matchedPerson: personName,
+        matchedPersonNames: person.names,
+        matchedRole: "감독",
+      });
       if (!hit || seen.has(hit.id)) continue;
       seen.add(hit.id);
       hits.push(hit);
@@ -156,7 +177,11 @@ function mergeHits(primary: SearchHit[], extra: SearchHit[]): SearchHit[] {
 
 function searchHitScore(hit: SearchHit, query: string): number {
   const titleScore = relevance([hit.titleKO, hit.titleEN], query);
-  const personScore = hit.matchedPerson ? relevance([hit.matchedPerson], query) : 0;
+  const personScore = hit.matchedPersonNames
+    ? relevance(hit.matchedPersonNames, query)
+    : hit.matchedPerson
+      ? relevance([hit.matchedPerson], query)
+      : 0;
   if (titleScore >= 80) return titleScore * 1000 + hit.voteCount;
   if (personScore >= PERSON_MATCH_MIN) return personScore * 100 + titleScore + hit.voteCount / 1000;
   return titleScore * 10 + hit.voteCount / 1000;

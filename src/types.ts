@@ -19,6 +19,7 @@ export interface SearchHit {
   providerID?: number;
   inTheaters?: boolean;
   matchedPerson?: string;
+  matchedPersonNames?: string[];
   matchedRole?: string;
 }
 
