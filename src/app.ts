@@ -28,6 +28,26 @@ let recommendLoaded = false;
 let nowPlayingIDs = new Set<number>();
 let providerRecommendGeneration = 0;
 let recommendError = "";
+let showRecommendPage = false;
+
+function isMobileLayout(): boolean {
+  return window.matchMedia("(max-width: 860px)").matches;
+}
+
+function emptyDetailHTML(): string {
+  if (isMobileLayout()) {
+    return `<div class="empty">검색하거나 「오늘 뭐 볼까」에서<br>작품을 골라 보세요.</div>`;
+  }
+  return `<div class="empty">왼쪽에서 작품을 고르거나<br>「오늘 뭐 볼까」 추천을 눌러 보세요.</div>`;
+}
+
+function recommendEntryHTML(): string {
+  return `
+    <div class="recommend-entry">
+      <button class="primary recommend-open" type="button" id="open-recommend">오늘 뭐 볼까</button>
+      <p class="hint">OTT별 급상승 · 요즘 인기 작품</p>
+    </div>`;
+}
 
 function allRecommendHits(): SearchHit[] {
   return recommendProviders.flatMap((group) => group.hits);
@@ -43,6 +63,7 @@ let searchInput!: HTMLInputElement;
 let resultsEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
 let settingsHost!: HTMLDivElement;
+let recommendHost!: HTMLDivElement;
 
 function activeGenreName(): string {
   return RECOMMEND_GENRES.find((genre) => genre.id === selectedGenreID)?.name ?? "전체";
@@ -88,8 +109,14 @@ function bindHits(root: ParentNode): void {
   root.querySelectorAll<HTMLButtonElement>("[data-id]").forEach((button) => {
     button.addEventListener("click", () => {
       selected = findHit(button.dataset.id ?? "");
+      if (showRecommendPage) {
+        showRecommendPage = false;
+        updateRecommendPage();
+      }
       updateResults();
-      void loadSelected();
+      void loadSelected().then(() => {
+        if (isMobileLayout()) detailEl.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
     });
   });
 }
@@ -109,6 +136,7 @@ export function render(): void {
   if (!mounted) mount();
   updateResults();
   updateDetail();
+  updateRecommendPage();
   updateSettings();
 }
 
@@ -132,12 +160,14 @@ function mount(): void {
       <main class="detail"></main>
     </div>
     <div id="settings-host"></div>
+    <div id="recommend-host"></div>
   `;
 
   searchInput = app.querySelector<HTMLInputElement>("#q")!;
   resultsEl = app.querySelector<HTMLDivElement>(".results")!;
   detailEl = app.querySelector<HTMLElement>(".detail")!;
   settingsHost = app.querySelector<HTMLDivElement>("#settings-host")!;
+  recommendHost = app.querySelector<HTMLDivElement>("#recommend-host")!;
 
   searchInput.value = query;
   searchInput.addEventListener("input", () => {
@@ -163,9 +193,15 @@ function mount(): void {
       updateResults();
     });
   });
+
+  window.addEventListener("resize", () => {
+    if (!isMobileLayout()) showRecommendPage = false;
+    updateResults();
+    updateRecommendPage();
+  });
 }
 
-function recommendHTML(): string {
+function recommendHTML(options?: { hideTitle?: boolean }): string {
   if (!settings.hasTMDB) {
     return `<div class="empty">API 키를 설정하면<br>오늘 뭐 볼지 추천해 드립니다.</div>`;
   }
@@ -180,7 +216,7 @@ function recommendHTML(): string {
     : "TVING·Wavve·Watcha는 TMDB 급상승, Netflix 등은 Movie of the Night 키 설정 시 공식 Top 10을 사용합니다.";
   return `
     <div class="recommend">
-      <h2 class="recommend-title">오늘 뭐 볼까</h2>
+      ${options?.hideTitle ? "" : `<h2 class="recommend-title">오늘 뭐 볼까</h2>`}
       <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 급상승${genreLabel}</h3>
       <div class="genre-tabs">
         ${RECOMMEND_GENRES.map((genre) => `
@@ -204,6 +240,7 @@ function bindRecommendControls(root: ParentNode): void {
       if (next === selectedGenreID) return;
       selectedGenreID = next;
       updateResults();
+      updateRecommendPage();
       void reloadProviderRecommendations();
     });
   });
@@ -212,14 +249,46 @@ function bindRecommendControls(root: ParentNode): void {
 function updateResults(): void {
   const list = filteredHits();
   const showRecommend = !query.trim() && !hits.length && !searching;
+  const mobile = isMobileLayout();
   resultsEl.innerHTML = `
     ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
     ${error && !hits.length && query.trim() ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
-    ${showRecommend ? recommendHTML() : ""}
+    ${showRecommend && mobile ? recommendEntryHTML() : ""}
+    ${showRecommend && !mobile ? recommendHTML() : ""}
     ${list.map((hit) => hitButton(hit, selected?.id)).join("")}
   `;
   bindHits(resultsEl);
   bindRecommendControls(resultsEl);
+  resultsEl.querySelector("#open-recommend")?.addEventListener("click", () => {
+    showRecommendPage = true;
+    if (!recommendLoaded && !loadingRecommend) void loadRecommendations();
+    updateRecommendPage();
+  });
+}
+
+function updateRecommendPage(): void {
+  if (!mounted) return;
+  if (!isMobileLayout() || !showRecommendPage) {
+    recommendHost.innerHTML = "";
+    return;
+  }
+  recommendHost.innerHTML = `
+    <div class="recommend-page">
+      <header class="recommend-page-head">
+        <button class="ghost" type="button" id="close-recommend">← 돌아가기</button>
+        <h2>오늘 뭐 볼까</h2>
+      </header>
+      <div class="recommend-page-body">${recommendHTML({ hideTitle: true })}</div>
+    </div>
+  `;
+  recommendHost.querySelector("#close-recommend")?.addEventListener("click", () => {
+    showRecommendPage = false;
+    updateRecommendPage();
+  });
+  const body = recommendHost.querySelector(".recommend-page-body");
+  if (!body) return;
+  bindHits(body);
+  bindRecommendControls(body);
 }
 
 function updateDetail(): void {
@@ -245,7 +314,7 @@ function updateDetail(): void {
 function detailHTML(): string {
   if (loadingDetail && !detail) return `<div class="loading">정보를 불러오는 중…</div>`;
   if (detailError && !detail) return `<div class="empty">${escapeHTML(detailError)}</div>`;
-  if (!detail) return `<div class="empty">왼쪽에서 작품을 고르거나<br>「오늘 뭐 볼까」 추천을 눌러 보세요.</div>`;
+  if (!detail) return emptyDetailHTML();
   const d = detail;
   const primary = d.titleKO || d.titleEN;
   const secondary = d.titleEN && d.titleEN !== primary ? d.titleEN : "";
@@ -512,6 +581,7 @@ export async function loadRecommendations(): Promise<void> {
   loadingRecommend = true;
   recommendError = "";
   updateResults();
+  updateRecommendPage();
   try {
     const [data] = await Promise.all([
       fetchRecommendations(settings.region, selectedGenreID),
@@ -530,6 +600,7 @@ export async function loadRecommendations(): Promise<void> {
   } finally {
     loadingRecommend = false;
     updateResults();
+    updateRecommendPage();
   }
 }
 
@@ -539,6 +610,7 @@ async function reloadProviderRecommendations(): Promise<void> {
   loadingProviderRecommend = true;
   recommendError = "";
   updateResults();
+  updateRecommendPage();
   try {
     const providers = await fetchProviderRecommendations(settings.region, selectedGenreID);
     if (generation !== providerRecommendGeneration) return;
@@ -554,5 +626,6 @@ async function reloadProviderRecommendations(): Promise<void> {
     if (generation !== providerRecommendGeneration) return;
     loadingProviderRecommend = false;
     updateResults();
+    updateRecommendPage();
   }
 }
