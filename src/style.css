@@ -120,6 +120,7 @@ body { background: var(--bg); color: var(--text); }
 .ott-group-head img { width: 22px; height: 22px; border-radius: 6px; object-fit: cover; }
 .loading.inline, .empty.inline { padding: 8px 16px 12px; min-height: auto; display: block; text-align: left; font-size: 12px; }
 .recommend-hint { margin: 0 16px 10px; font-size: 11px; color: var(--muted); line-height: 1.4; }
+.hint.warn { color: #ffb4b4; }
 .genre-tab:disabled { opacity: 0.55; cursor: wait; }
 .hit b { display: block; }
 .hit small { color: var(--muted); }

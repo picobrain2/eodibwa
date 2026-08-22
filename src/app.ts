@@ -2,7 +2,7 @@ import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles,
 import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
-import { translateReviews } from "./translate";
+import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
 import { settings } from "./settings";
 import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
 
@@ -313,6 +313,7 @@ function badge(label: string, value: string, sub: string | undefined, klass: str
 
 function reviewsSectionHTML(d: TitleDetail): string {
   const hasKorean = d.popularReviews.some((review) => containsHangul(review.content) || containsHangul(review.translatedContent ?? ""));
+  const translationBlocked = reviewsNeedTranslation(d.popularReviews) && !reviewsTranslated(d.popularReviews);
   const watcha = watchaSearchURL(d.titleKO, d.titleEN);
   return `
     <section class="section">
@@ -336,6 +337,7 @@ function reviewsSectionHTML(d: TitleDetail): string {
         `).join("")}
       </div>` : `<p class="hint">TMDB에 등록된 한국어 리뷰가 없습니다.</p>`}
       ${!hasKorean ? `<p class="hint"><a href="${watcha}" target="_blank" rel="noreferrer">왓챠피디아에서 한국어 평가 보기</a></p>` : ""}
+      ${translationBlocked ? `<p class="hint warn">영어 평가 번역 서비스가 일시적으로 제한 중입니다. 잠시 후 다시 시도하거나 원문을 참고해 주세요.</p>` : ""}
       <p class="hint">한글 리뷰를 우선 표시하며, 영어 리뷰는 자동 번역합니다.</p>
     </section>`;
 }
