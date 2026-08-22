@@ -20,6 +20,7 @@ jobs:
     env:
       VITE_TMDB_KEY: a4cce0ad04241c7620b2356ec6689590
       VITE_OMDB_KEY: 9fa86b4e
+      VITE_MOTN_KEY: motn-key-v4-4VEcp7unHhHOE6MefSGekO5ehdHB0kQk
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

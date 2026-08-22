@@ -1,3 +1,4 @@
+import { fetchMotnProviderHits, invalidateMotnCache, MOTN_TMDB_PROVIDER, prefetchMotnRegion } from "./motn";
 import { pickEnglish, pickKorean } from "./lang";
 import { settings } from "./settings";
 import type { MediaKind, SearchHit } from "./types";
@@ -143,6 +144,7 @@ function matchesGenre(genreIDs: number[], kind: MediaKind, genre?: RecommendGenr
 
 export function invalidateRecommendChart(): void {
   chartCache = undefined;
+  invalidateMotnCache();
 }
 
 export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
@@ -271,41 +273,59 @@ async function buildTrendingChart(region: string): Promise<ChartEntry[]> {
   return entries;
 }
 
-function projectProviders(
+function projectSingleProvider(
   entries: ChartEntry[],
   catalog: Map<number, { name: string; logo?: string }>,
-  region: string,
-  genre?: RecommendGenre,
+  genre: RecommendGenre | undefined,
+  providerID: number,
   limit = 8,
-): RecommendProvider[] {
-  const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
+): SearchHit[] {
+  const meta = catalog.get(providerID) ?? { name: `Provider ${providerID}` };
   const filtered = entries.filter((entry) => matchesGenre(entry.genreIDs, entry.kind, genre));
-
-  return ids.flatMap((id) => {
-    const meta = catalog.get(id) ?? { name: `Provider ${id}` };
-    const hits = filtered
-      .filter((entry) => entry.providerIDs.has(id))
-      .sort((a, b) => a.rank - b.rank)
-      .slice(0, limit)
-      .map((entry) => ({
-        ...entry.hit,
-        providerLogo: meta.logo,
-        providerName: meta.name,
-        providerID: id,
-      }));
-
-    if (!hits.length) return [];
-    return [{ id, name: meta.name, logo: meta.logo, hits }];
-  });
+  return filtered
+    .filter((entry) => entry.providerIDs.has(providerID))
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, limit)
+    .map((entry) => ({
+      ...entry.hit,
+      providerLogo: meta.logo,
+      providerName: meta.name,
+      providerID,
+    }));
 }
 
 export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
   const genre = genreID === 0 ? undefined : RECOMMEND_GENRES.find((item) => item.id === genreID);
-  const [entries, catalog] = await Promise.all([
-    buildTrendingChart(region),
-    providerCatalog(region),
-  ]);
-  return projectProviders(entries, catalog, region, genre);
+  const catalog = await providerCatalog(region);
+  const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
+
+  const needsTmdb = ids.some((id) => !settings.hasMOTN || !MOTN_TMDB_PROVIDER[id]);
+  const motnPrefetch = settings.hasMOTN ? prefetchMotnRegion(region) : Promise.resolve();
+  const tmdbChart = needsTmdb ? buildTrendingChart(region) : Promise.resolve([] as ChartEntry[]);
+  const [entries] = await Promise.all([tmdbChart, motnPrefetch]);
+
+  const rows = await Promise.all(
+    ids.map(async (id) => {
+      const meta = catalog.get(id) ?? { name: `Provider ${id}` };
+      const provider = { id, name: meta.name, logo: meta.logo };
+      const motnService = settings.hasMOTN ? MOTN_TMDB_PROVIDER[id] : undefined;
+
+      if (motnService) {
+        try {
+          const hits = await fetchMotnProviderHits(region, motnService, provider, genre);
+          if (hits.length) return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
+        } catch {
+          // fall back to TMDB for this provider
+        }
+      }
+
+      const hits = projectSingleProvider(entries, catalog, genre, id);
+      if (!hits.length) return null;
+      return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
+    }),
+  );
+
+  return rows.filter((row): row is RecommendProvider => row !== null);
 }
 
 export async function loadRecommendations(region: string, genreID = 0): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {

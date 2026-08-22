@@ -1,4 +1,5 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
+import { motnCacheFresh, pingMOTN } from "./motn";
 import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
@@ -169,6 +170,11 @@ function recommendHTML(): string {
   }
   if (loadingRecommend) return `<div class="loading">추천 불러오는 중…</div>`;
   const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
+  const motnHint = settings.hasMOTN
+    ? (motnCacheFresh(settings.region)
+      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(6시간 캐시), TVING·Wavve·Watcha는 TMDB 급상승입니다."
+      : "Netflix·Disney+ 등 공식 Top 10을 불러오는 중… (이후 6시간 캐시)")
+    : "TVING·Wavve·Watcha는 TMDB 급상승, Netflix 등은 Movie of the Night 키 설정 시 공식 Top 10을 사용합니다.";
   return `
     <div class="recommend">
       <h2 class="recommend-title">오늘 뭐 볼까</h2>
@@ -179,7 +185,7 @@ function recommendHTML(): string {
         `).join("")}
       </div>
       ${loadingProviderRecommend ? `<div class="loading inline">OTT별 순위 불러오는 중…</div>` : ""}
-      <p class="recommend-hint">오늘·이번 주 TMDB 급상승 차트 중 해당 OTT에서 시청 가능한 작품입니다. Netflix 앱 순위와는 다를 수 있습니다.</p>
+      <p class="recommend-hint">${escapeHTML(motnHint)}</p>
       ${recommendProviders.map((group) => ottGroupHTML(group)).join("")}
       ${!loadingProviderRecommend && !recommendProviders.length ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
       <h3 class="recommend-section">요즘 인기</h3>
@@ -357,6 +363,12 @@ function settingsHTML(): string {
         <label>OMDb API 키 (선택)</label>
         <input id="omdb-key" value="${escapeHTML(settings.omdb)}" placeholder="예: 9fa86b4e" />
         <a class="ghost" href="https://www.omdbapi.com/apikey.aspx" target="_blank" rel="noreferrer">OMDb 키 받기</a>
+        <label>Movie of the Night API 키 (선택)</label>
+        <input id="motn-key" value="${escapeHTML(settings.motn)}" placeholder="motn-key-v4-..." />
+        <div class="row">
+          <a class="ghost" href="https://www.movieofthenight.com/about/api" target="_blank" rel="noreferrer">MOTN 키 받기</a>
+          <button class="ghost" id="ping-motn">MOTN 연결 확인</button>
+        </div>
         <p id="settings-status" class="hint"></p>
         <button class="primary" id="save-settings">완료</button>
       </div>
@@ -371,6 +383,7 @@ function updateSettings(): void {
   settingsHost.querySelector("#save-settings")?.addEventListener("click", () => {
     settings.tmdb = settingsHost.querySelector<HTMLInputElement>("#tmdb-key")?.value ?? "";
     settings.omdb = settingsHost.querySelector<HTMLInputElement>("#omdb-key")?.value ?? "";
+    settings.motn = settingsHost.querySelector<HTMLInputElement>("#motn-key")?.value ?? "";
     showSettings = false;
     updateSettings();
   });
@@ -379,9 +392,19 @@ function updateSettings(): void {
     const status = settingsHost.querySelector("#settings-status");
     try {
       await pingTMDB();
-      if (status) status.textContent = "연결 성공";
+      if (status) status.textContent = "TMDB 연결 성공";
     } catch (err) {
-      if (status) status.textContent = err instanceof Error ? err.message : "연결 실패";
+      if (status) status.textContent = err instanceof Error ? err.message : "TMDB 연결 실패";
+    }
+  });
+  settingsHost.querySelector("#ping-motn")?.addEventListener("click", async () => {
+    settings.motn = settingsHost.querySelector<HTMLInputElement>("#motn-key")?.value ?? "";
+    const status = settingsHost.querySelector("#settings-status");
+    try {
+      await pingMOTN();
+      if (status) status.textContent = "MOTN 연결 성공";
+    } catch (err) {
+      if (status) status.textContent = err instanceof Error ? err.message : "MOTN 연결 실패";
     }
   });
 }
