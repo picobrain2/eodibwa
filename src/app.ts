@@ -238,6 +238,17 @@ function isInTheaters(hit: SearchHit): boolean {
   return hit.kind === "movie" && nowPlayingIDs.has(hit.tmdbID);
 }
 
+function prioritizeNowPlaying(hits: SearchHit[], playing = nowPlayingIDs): SearchHit[] {
+  if (!playing.size) return hits;
+  const inTheaters: SearchHit[] = [];
+  const rest: SearchHit[] = [];
+  for (const hit of hits) {
+    if (hit.kind === "movie" && playing.has(hit.tmdbID)) inTheaters.push(hit);
+    else rest.push(hit);
+  }
+  return [...inTheaters, ...rest];
+}
+
 function theaterBadgeHTML(): string {
   return `<span class="theater-badge">극장 상영중</span>`;
 }
@@ -670,10 +681,14 @@ async function runSearch(raw: string): Promise<void> {
   updateResults();
 
   try {
-    const nextHits = await searchTitles(trimmed);
+    const [nextHits, playing] = await Promise.all([
+      searchTitles(trimmed),
+      loadNowPlaying(settings.region),
+    ]);
     if (generation !== searchGeneration) return;
     if (searchInput.value.trim() !== trimmed) return;
-    hits = nextHits;
+    nowPlayingIDs = playing;
+    hits = prioritizeNowPlaying(nextHits, playing);
     selected = isMobileLayout() ? undefined : hits[0];
     updateResults();
     if (selected) await loadSelected();
