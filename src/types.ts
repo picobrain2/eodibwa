@@ -14,6 +14,8 @@ export interface SearchHit {
   posterPath?: string;
   voteAverage: number;
   voteCount: number;
+  providerLogo?: string;
+  providerName?: string;
 }
 
 export interface WatchProvider {

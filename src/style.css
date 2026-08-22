@@ -83,6 +83,12 @@ body { background: var(--bg); color: var(--text); }
   border-radius: 8px;
 }
 .hit img { width: 42px; height: 63px; }
+.hit { grid-template-columns: 42px 1fr auto; align-items: center; }
+.hit-provider { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; }
+.hit-provider-name { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.recommend { padding-bottom: 12px; }
+.recommend-title { margin: 12px 16px 8px; font-size: 18px; }
+.recommend-section { margin: 14px 16px 6px; font-size: 13px; color: var(--gold); font-weight: 700; }
 .hit b { display: block; }
 .hit small { color: var(--muted); }
 

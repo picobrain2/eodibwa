@@ -1,4 +1,5 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
+import { loadRecommendations as fetchRecommendations } from "./recommend";
 import { containsHangul } from "./lang";
 import { translateReviews } from "./translate";
 import { settings } from "./settings";
@@ -16,17 +17,54 @@ let error = "";
 let showSettings = !settings.hasTMDB;
 let debounce: number | undefined;
 let searchGeneration = 0;
-let mounted = false;
+let recommendTrending: SearchHit[] = [];
+let recommendStreaming: SearchHit[] = [];
+let loadingRecommend = false;
+let recommendLoaded = false;
 
 let searchInput!: HTMLInputElement;
 let resultsEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
 let settingsHost!: HTMLDivElement;
 
+function findHit(id: string): SearchHit | undefined {
+  return hits.find((hit) => hit.id === id)
+    ?? recommendTrending.find((hit) => hit.id === id)
+    ?? recommendStreaming.find((hit) => hit.id === id);
+}
+
+function hitButton(hit: SearchHit, selectedId?: string): string {
+  const meta = [hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · ");
+  const provider = hit.providerLogo
+    ? `<img class="hit-provider" alt="" title="${escapeHTML(hit.providerName ?? "")}" src="${posterURL(hit.providerLogo, "w92") ?? ""}" />`
+    : (hit.providerName ? `<span class="hit-provider-name">${escapeHTML(hit.providerName)}</span>` : "");
+  return `
+    <button class="hit ${selectedId === hit.id ? "selected" : ""}" data-id="${hit.id}">
+      <img alt="" src="${posterURL(hit.posterPath) ?? ""}" />
+      <span>
+        <b>${escapeHTML(hit.titleKO || hit.titleEN)}</b>
+        <small>${escapeHTML(meta)}</small>
+      </span>
+      ${provider}
+    </button>`;
+}
+
+function bindHits(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      selected = findHit(button.dataset.id ?? "");
+      updateResults();
+      void loadSelected();
+    });
+  });
+}
+
 function filteredHits(): SearchHit[] {
   if (filter === "all") return hits;
   return hits.filter((hit) => hit.kind === filter);
 }
+
+let mounted = false;
 
 function escapeHTML(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
@@ -92,30 +130,31 @@ function mount(): void {
   });
 }
 
+function recommendHTML(): string {
+  if (!settings.hasTMDB) {
+    return `<div class="empty">API 키를 설정하면<br>오늘 뭐 볼지 추천해 드립니다.</div>`;
+  }
+  if (loadingRecommend) return `<div class="loading">추천 불러오는 중…</div>`;
+  return `
+    <div class="recommend">
+      <h2 class="recommend-title">오늘 뭐 볼까</h2>
+      <h3 class="recommend-section">요즘 인기</h3>
+      ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
+      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))}에서 볼 수 있는 인기</h3>
+      ${recommendStreaming.map((hit) => hitButton(hit, selected?.id)).join("")}
+    </div>`;
+}
+
 function updateResults(): void {
   const list = filteredHits();
+  const showRecommend = !query.trim() && !hits.length && !searching;
   resultsEl.innerHTML = `
     ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
-    ${error && !hits.length ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
-    ${!query.trim() && !hits.length ? `<div class="empty">한글이나 영어 제목으로 검색하세요.<br>예: 오징어게임, Squid Game</div>` : ""}
-    ${list.map((hit) => `
-      <button class="hit ${selected?.id === hit.id ? "selected" : ""}" data-id="${hit.id}">
-        <img alt="" src="${posterURL(hit.posterPath) ?? ""}" />
-        <span>
-          <b>${escapeHTML(hit.titleKO || hit.titleEN)}</b>
-          <small>${escapeHTML([hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · "))}</small>
-        </span>
-      </button>
-    `).join("")}
+    ${error && !hits.length && query.trim() ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
+    ${showRecommend ? recommendHTML() : ""}
+    ${list.map((hit) => hitButton(hit, selected?.id)).join("")}
   `;
-
-  resultsEl.querySelectorAll<HTMLButtonElement>("[data-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selected = hits.find((hit) => hit.id === button.dataset.id);
-      updateResults();
-      void loadSelected();
-    });
-  });
+  bindHits(resultsEl);
 }
 
 function updateDetail(): void {
@@ -129,7 +168,7 @@ function updateDetail(): void {
 function detailHTML(): string {
   if (loadingDetail && !detail) return `<div class="loading">정보를 불러오는 중…</div>`;
   if (detailError && !detail) return `<div class="empty">${escapeHTML(detailError)}</div>`;
-  if (!detail) return `<div class="empty">왼쪽에서 작품을 고르면<br>어디서 볼 수 있는지와 평점을 보여 줍니다.</div>`;
+  if (!detail) return `<div class="empty">왼쪽에서 작품을 고르거나<br>「오늘 뭐 볼까」 추천을 눌러 보세요.</div>`;
   const d = detail;
   const primary = d.titleKO || d.titleEN;
   const secondary = d.titleEN && d.titleEN !== primary ? d.titleEN : "";
@@ -350,5 +389,23 @@ async function loadSelected(): Promise<void> {
     loadingReviews = false;
     loadingDetail = false;
     updateDetail();
+  }
+}
+
+export async function loadRecommendations(): Promise<void> {
+  if (!settings.hasTMDB || loadingRecommend || recommendLoaded) return;
+  loadingRecommend = true;
+  updateResults();
+  try {
+    const data = await fetchRecommendations(settings.region);
+    recommendTrending = data.trending;
+    recommendStreaming = data.streaming;
+    recommendLoaded = true;
+  } catch {
+    recommendTrending = [];
+    recommendStreaming = [];
+  } finally {
+    loadingRecommend = false;
+    updateResults();
   }
 }
