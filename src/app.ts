@@ -551,9 +551,12 @@ function updateDetailPage(): void {
 }
 
 function detailHTML(options?: { forOverlay?: boolean }): string {
-  if (loadingDetail && !detail) return `<div class="loading">정보를 불러오는 중…</div>`;
-  if (detailError && !detail) return `<div class="empty">${escapeHTML(detailError)}</div>`;
-  if (!detail) return options?.forOverlay ? `<div class="loading">정보를 불러오는 중…</div>` : emptyDetailHTML();
+  if (!detail) {
+    if (detailError) return `<div class="empty">${escapeHTML(detailError)}</div>`;
+    if (searching && query.trim()) return `<div class="loading">검색 중…</div>`;
+    if (loadingDetail) return `<div class="loading">정보를 불러오는 중…</div>`;
+    return options?.forOverlay ? `<div class="loading">정보를 불러오는 중…</div>` : emptyDetailHTML();
+  }
   const d = detail;
   const primary = d.titleKO || d.titleEN;
   const secondary = d.titleEN && d.titleEN !== primary ? d.titleEN : "";
@@ -678,7 +681,13 @@ async function runSearch(raw: string): Promise<void> {
   const generation = ++searchGeneration;
   searching = true;
   error = "";
+  detailGeneration += 1;
+  loadingDetail = !isMobileLayout();
+  detail = undefined;
+  detailError = "";
+  if (!isMobileLayout()) selected = undefined;
   updateResults();
+  updateDetail();
 
   try {
     const [nextHits, playing] = await Promise.all([
@@ -691,7 +700,12 @@ async function runSearch(raw: string): Promise<void> {
     hits = prioritizeNowPlaying(nextHits, playing);
     selected = isMobileLayout() ? undefined : hits[0];
     updateResults();
-    if (selected) void loadSelected();
+    if (selected) {
+      void loadSelected();
+    } else {
+      loadingDetail = false;
+      updateDetail();
+    }
 
     void refineSearchWithImdb(nextHits, trimmed).then((refined) => {
       if (generation !== searchGeneration) return;
@@ -702,7 +716,9 @@ async function runSearch(raw: string): Promise<void> {
   } catch (err) {
     if (generation !== searchGeneration) return;
     error = err instanceof Error ? err.message : "검색에 실패했습니다.";
+    loadingDetail = false;
     updateResults();
+    updateDetail();
   } finally {
     if (generation === searchGeneration) {
       searching = false;
