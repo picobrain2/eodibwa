@@ -301,6 +301,45 @@ function escapeHTML(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
+function personSearchButton(name: string, className = "person-search"): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "";
+  return `<button type="button" class="${className}" data-person-search="${escapeHTML(trimmed)}">${escapeHTML(trimmed)}</button>`;
+}
+
+function directorLinksHTML(director: string): string {
+  const names = director.split(",").map((part) => part.trim()).filter(Boolean);
+  if (!names.length) return "";
+  return `<p>감독/제작 ${names.map((name) => personSearchButton(name, "person-search linkish")).join(" · ")}</p>`;
+}
+
+function searchForPerson(name: string): void {
+  const trimmed = name.trim();
+  if (!trimmed) return;
+  window.clearTimeout(debounce);
+  query = trimmed;
+  if (searchInput) searchInput.value = trimmed;
+
+  if (isMobileLayout()) {
+    showDetailPage = false;
+    showRecommendPage = false;
+    detailHost.innerHTML = "";
+    suppressHistory = true;
+    history.replaceState({ mobile: "main" as MobileView }, "");
+    suppressHistory = false;
+    updateRecommendPage();
+  }
+
+  void runSearch(trimmed);
+  searchInput?.focus();
+}
+
+function bindPersonSearch(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-person-search]").forEach((button) => {
+    button.onclick = () => searchForPerson(button.dataset.personSearch ?? "");
+  });
+}
+
 export function render(): void {
   if (!mounted) mount();
   updateResults();
@@ -509,6 +548,7 @@ function bindDetailControls(root: ParentNode): void {
     void loadRecommendations();
     updateDetail();
   });
+  bindPersonSearch(root);
 }
 
 function updateDetail(): void {
@@ -573,7 +613,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
         ${secondary ? `<p>${escapeHTML(secondary)}</p>` : ""}
         <div class="pills">${theaterBadge}${meta.map((item) => `<span>${escapeHTML(String(item))}</span>`).join("")}</div>
         ${d.tagline ? `<p><i>${escapeHTML(d.tagline)}</i></p>` : ""}
-        ${d.director ? `<p>감독/제작 ${escapeHTML(d.director)}</p>` : ""}
+        ${d.director ? directorLinksHTML(d.director) : ""}
         ${d.networks.length ? `<p>방송/공개 ${escapeHTML(d.networks.join(" · "))}</p>` : ""}
       </div>
     </div>
@@ -612,11 +652,11 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
     </section>
     ${d.overview ? `<section class="section"><h2>줄거리</h2><p>${escapeHTML(d.overview)}</p></section>` : ""}
     ${d.cast.length ? `<section class="section"><h2>출연</h2><div class="cast">${d.cast.map((person) => `
-      <div class="person">
+      <button type="button" class="person person-search" data-person-search="${escapeHTML(person.name)}">
         <img class="face" alt="" src="${posterURL(person.profilePath) ?? ""}" />
         <div>${escapeHTML(person.name)}</div>
         <small>${escapeHTML(person.role)}</small>
-      </div>`).join("")}</div></section>` : ""}
+      </button>`).join("")}</div></section>` : ""}
     <section class="section links">
       <a href="${d.tmdbURL}" target="_blank" rel="noreferrer">TMDB에서 열기</a>
       ${d.imdbID ? `<a href="https://www.imdb.com/title/${d.imdbID}/" target="_blank" rel="noreferrer">IMDb에서 열기</a>` : ""}
