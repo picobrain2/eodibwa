@@ -100,6 +100,72 @@ export async function pingTMDB(): Promise<void> {
   await tmdb("/configuration");
 }
 
+interface TitleLocaleDTO {
+  title?: string;
+  name?: string;
+  original_title?: string;
+  original_name?: string;
+  overview?: string;
+  poster_path?: string;
+}
+
+interface LocalizedTitles {
+  titleKO: string;
+  titleEN: string;
+  overview?: string;
+  posterPath?: string;
+}
+
+const localizedTitleCache = new Map<string, LocalizedTitles>();
+const LOCALIZE_BATCH = 6;
+
+async function fetchLocalizedTitles(kind: MediaKind, id: number): Promise<LocalizedTitles> {
+  const cacheKey = `${kind}-${id}`;
+  const cached = localizedTitleCache.get(cacheKey);
+  if (cached) return cached;
+
+  const [ko, en] = await Promise.all([
+    tmdb<TitleLocaleDTO>(`/${kind}/${id}`, { language: "ko-KR" }),
+    tmdb<TitleLocaleDTO>(`/${kind}/${id}`, { language: "en-US" }),
+  ]);
+  const localized = ko.title || ko.name || "";
+  const original = ko.original_title || ko.original_name || "";
+  const enLocalized = en.title || en.name || "";
+  const enOriginal = en.original_title || en.original_name || "";
+  const result: LocalizedTitles = {
+    titleKO: pickKorean([localized, original, enLocalized, enOriginal]),
+    titleEN: pickEnglish([enLocalized, enOriginal, original, localized]),
+    overview: ko.overview || en.overview,
+    posterPath: ko.poster_path || en.poster_path,
+  };
+  localizedTitleCache.set(cacheKey, result);
+  return result;
+}
+
+export async function localizeHitTitles(hits: SearchHit[]): Promise<SearchHit[]> {
+  if (!hits.length || !settings.hasTMDB) return hits;
+
+  const unique = [...new Map(hits.map((hit) => [hit.id, hit])).values()];
+  const pending = unique.filter((hit) => !localizedTitleCache.has(hit.id));
+
+  for (let index = 0; index < pending.length; index += LOCALIZE_BATCH) {
+    const batch = pending.slice(index, index + LOCALIZE_BATCH);
+    await Promise.allSettled(batch.map((hit) => fetchLocalizedTitles(hit.kind, hit.tmdbID)));
+  }
+
+  return hits.map((hit) => {
+    const loc = localizedTitleCache.get(hit.id);
+    if (!loc) return hit;
+    return {
+      ...hit,
+      titleKO: pickKorean([loc.titleKO, hit.titleKO, hit.titleEN]),
+      titleEN: pickEnglish([loc.titleEN, hit.titleEN, hit.titleKO]),
+      overview: loc.overview || hit.overview,
+      posterPath: hit.posterPath || loc.posterPath,
+    };
+  });
+}
+
 export async function searchTitles(query: string): Promise<SearchHit[]> {
   let hits = await collect(searchVariants(query));
   const strong = hits.some((hit) => isStrongMatch([hit.titleKO, hit.titleEN], query));

@@ -1,3 +1,4 @@
+import { localizeHitTitles } from "./api";
 import { settings } from "./settings";
 import type { RecommendGenre } from "./recommend";
 import type { MediaKind, SearchHit } from "./types";
@@ -240,11 +241,12 @@ export async function fetchMotnProviderHits(
   limit = 8,
 ): Promise<SearchHit[]> {
   const cache = await ensureRegionCache(region);
-  return (cache.tops[service] ?? [])
+  const hits = (cache.tops[service] ?? [])
     .filter((show) => (genre ? matchesGenre(show, genre) : true))
     .slice(0, limit)
     .map((show) => motnShowToHit(show, provider))
     .filter((hit): hit is SearchHit => Boolean(hit));
+  return localizeHitTitles(hits);
 }
 
 export async function prefetchMotnRegion(region: string): Promise<boolean> {
