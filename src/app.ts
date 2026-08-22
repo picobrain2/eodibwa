@@ -324,11 +324,11 @@ function recommendHTML(options?: { hideTitle?: boolean }): string {
   const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
   const motnHint = settings.hasMOTN
     ? (motnCacheFresh(settings.region)
-      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha는 TMDB 급상승입니다."
+      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha·쿠팡플레이는 TMDB 인기작입니다."
       : (loadingRecommend || loadingProviderRecommend)
         ? "Netflix·Disney+ 공식 Top 10을 불러오는 중…"
         : "Netflix·Disney+ Top 10을 불러오지 못해 TMDB 급상승으로 표시합니다.")
-    : "TVING·Wavve·Watcha는 TMDB 급상승, Netflix 등은 Movie of the Night 키 설정 시 공식 Top 10을 사용합니다.";
+    : "TVING·Wavve·Watcha·쿠팡플레이는 TMDB 인기작, Netflix 등은 Movie of the Night 키 설정 시 공식 Top 10을 사용합니다.";
   return `
     <div class="recommend">
       ${options?.hideTitle ? "" : `<h2 class="recommend-title">오늘 뭐 볼까</h2>`}

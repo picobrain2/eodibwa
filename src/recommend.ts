@@ -35,13 +35,16 @@ export const RECOMMEND_GENRES: RecommendGenre[] = [
 ];
 
 const PROVIDER_IDS: Record<string, number[]> = {
-  KR: [8, 867, 356, 97, 337, 119, 350],
+  KR: [8, 1883, 356, 97, 1881, 337, 119, 350],
   US: [8, 337, 350, 119, 384, 531],
   JP: [8, 337, 350, 119, 84],
   TW: [8, 337, 350, 119],
   HK: [8, 337, 350, 119],
   GB: [8, 337, 350, 119, 39],
 };
+
+/** KR local OTTs — use TMDB discover + watch provider (not network IDs). */
+const TMDB_DISCOVER_PROVIDERS = new Set([1883, 356, 97, 1881]);
 
 const CATALOG_TTL_MS = 60 * 60 * 1000;
 const CHART_TTL_MS = 30 * 60 * 1000;
@@ -95,6 +98,14 @@ interface ChartCache {
 
 let chartCache: ChartCache | undefined;
 
+interface DiscoverRow {
+  item: MediaItem & { popularity?: number };
+  kind: MediaKind;
+  english?: MediaItem;
+}
+
+const discoverCache = new Map<string, { hits: SearchHit[]; expires: number }>();
+
 async function tmdb<T>(path: string, query: Record<string, string> = {}): Promise<T> {
   const key = settings.tmdb;
   if (!key) throw new Error("TMDB API 키가 필요합니다.");
@@ -144,6 +155,7 @@ function matchesGenre(genreIDs: number[], kind: MediaKind, genre?: RecommendGenr
 
 export function invalidateRecommendChart(): void {
   chartCache = undefined;
+  discoverCache.clear();
   invalidateMotnCache();
 }
 
@@ -294,6 +306,71 @@ function projectSingleProvider(
     }));
 }
 
+async function fetchDiscoverMedia(
+  kind: MediaKind,
+  region: string,
+  providerID: number,
+  genre?: RecommendGenre,
+): Promise<DiscoverRow[]> {
+  const query: Record<string, string> = {
+    language: "ko-KR",
+    watch_region: region,
+    with_watch_providers: String(providerID),
+    with_watch_monetization_types: "flatrate",
+    sort_by: "popularity.desc",
+    page: "1",
+  };
+  const genreID = kind === "movie" ? genre?.movieID : genre?.tvID;
+  if (genreID) query.with_genres = String(genreID);
+
+  const [ko, en] = await Promise.all([
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, query),
+    tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, language: "en-US" }),
+  ]);
+
+  const enByID = new Map((en.results ?? []).map((item) => [item.id, item]));
+  return (ko.results ?? []).map((item) => ({
+    item,
+    kind,
+    english: enByID.get(item.id),
+  }));
+}
+
+async function fetchDiscoverProviderHits(
+  region: string,
+  providerID: number,
+  provider: { id: number; name: string; logo?: string },
+  genre?: RecommendGenre,
+  limit = 8,
+): Promise<SearchHit[]> {
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}`;
+  const cached = discoverCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.hits;
+
+  const kinds: MediaKind[] = genre
+    ? [
+      ...(genre.movieID ? (["movie"] as MediaKind[]) : []),
+      ...(genre.tvID ? (["tv"] as MediaKind[]) : []),
+    ]
+    : ["tv", "movie"];
+  const mediaKinds = kinds.length ? kinds : (["tv", "movie"] as MediaKind[]);
+
+  const rows = (await Promise.all(mediaKinds.map((kind) => fetchDiscoverMedia(kind, region, providerID, genre)))).flat();
+  const seen = new Set<string>();
+  const hits = rows
+    .sort((a, b) => (b.item.popularity ?? 0) - (a.item.popularity ?? 0))
+    .flatMap((row) => {
+      const key = `${row.kind}-${row.item.id}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [toHit(row.item, row.kind, row.english, provider)];
+    })
+    .slice(0, limit);
+
+  discoverCache.set(cacheKey, { hits, expires: Date.now() + CHART_TTL_MS });
+  return hits;
+}
+
 export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
   const genre = genreID === 0 ? undefined : RECOMMEND_GENRES.find((item) => item.id === genreID);
   const catalog = await providerCatalog(region);
@@ -316,6 +393,12 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
         } catch {
           // fall back to TMDB for this provider
         }
+      }
+
+      if (TMDB_DISCOVER_PROVIDERS.has(id)) {
+        const hits = await fetchDiscoverProviderHits(region, id, provider, genre);
+        if (hits.length) return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
+        return null;
       }
 
       const hits = projectSingleProvider(entries, catalog, genre, id);
