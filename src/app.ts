@@ -25,6 +25,7 @@ let loadingRecommend = false;
 let loadingProviderRecommend = false;
 let recommendLoaded = false;
 let nowPlayingIDs = new Set<number>();
+let providerRecommendGeneration = 0;
 
 function allRecommendHits(): SearchHit[] {
   return recommendProviders.flatMap((group) => group.hits);
@@ -174,10 +175,11 @@ function recommendHTML(): string {
       <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 인기${genreLabel}</h3>
       <div class="genre-tabs">
         ${RECOMMEND_GENRES.map((genre) => `
-          <button class="genre-tab ${genre.id === selectedGenreID ? "active" : ""}" data-genre="${genre.id}">${escapeHTML(genre.name)}</button>
+          <button class="genre-tab ${genre.id === selectedGenreID ? "active" : ""}" data-genre="${genre.id}" ${loadingProviderRecommend && genre.id !== selectedGenreID ? "disabled" : ""}>${escapeHTML(genre.name)}</button>
         `).join("")}
       </div>
       ${loadingProviderRecommend ? `<div class="loading inline">OTT별 순위 불러오는 중…</div>` : ""}
+      <p class="recommend-hint">TMDB 주간 급상승 + 플랫폼 인기순입니다. Netflix 등 앱 내 순위와는 다를 수 있습니다.</p>
       ${recommendProviders.map((group) => ottGroupHTML(group)).join("")}
       ${!loadingProviderRecommend && !recommendProviders.length ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
       <h3 class="recommend-section">요즘 인기</h3>
@@ -189,8 +191,9 @@ function bindRecommendControls(root: ParentNode): void {
   root.querySelectorAll<HTMLButtonElement>("[data-genre]").forEach((button) => {
     button.addEventListener("click", () => {
       const next = Number(button.dataset.genre);
-      if (next === selectedGenreID || loadingProviderRecommend) return;
+      if (next === selectedGenreID) return;
       selectedGenreID = next;
+      updateResults();
       void reloadProviderRecommendations();
     });
   });
@@ -305,7 +308,7 @@ function badge(label: string, value: string, sub: string | undefined, klass: str
 }
 
 function reviewsSectionHTML(d: TitleDetail): string {
-  const hasKorean = d.popularReviews.some((review) => containsHangul(review.content));
+  const hasKorean = d.popularReviews.some((review) => containsHangul(review.content) || containsHangul(review.translatedContent ?? ""));
   const watcha = watchaSearchURL(d.titleKO, d.titleEN);
   return `
     <section class="section">
@@ -428,6 +431,7 @@ async function loadSelected(): Promise<void> {
   loadingDetail = true;
   loadingReviews = false;
   detailError = "";
+  detail = undefined;
   updateDetail();
   try {
     const next = await fetchDetail(hit.kind, hit.tmdbID);
@@ -435,20 +439,28 @@ async function loadSelected(): Promise<void> {
     detail = next;
     loadingDetail = false;
     updateDetail();
-
-    loadingReviews = true;
-    updateDetail();
-    const reviews = await fetchPopularReviews(hit.kind, hit.tmdbID, next.titleKO, next.titleEN);
-    if (generation !== detailGeneration || !detail) return;
-    detail.popularReviews = await translateReviews(reviews);
   } catch (err) {
     if (generation !== detailGeneration) return;
     detailError = err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.";
     detail = undefined;
+    loadingDetail = false;
+    updateDetail();
+    return;
+  }
+
+  loadingReviews = true;
+  updateDetail();
+  try {
+    const reviews = await fetchPopularReviews(hit.kind, hit.tmdbID, detail.titleKO, detail.titleEN);
+    if (generation !== detailGeneration || !detail) return;
+    detail.popularReviews = await translateReviews(reviews);
+    if (generation !== detailGeneration || !detail) return;
+  } catch {
+    if (generation !== detailGeneration || !detail) return;
+    detail.popularReviews = detail.popularReviews ?? [];
   } finally {
     if (generation !== detailGeneration) return;
     loadingReviews = false;
-    loadingDetail = false;
     updateDetail();
   }
 }
@@ -484,14 +496,19 @@ export async function loadRecommendations(): Promise<void> {
 }
 
 async function reloadProviderRecommendations(): Promise<void> {
-  if (!settings.hasTMDB || loadingProviderRecommend) return;
+  if (!settings.hasTMDB) return;
+  const generation = ++providerRecommendGeneration;
   loadingProviderRecommend = true;
   updateResults();
   try {
-    recommendProviders = await fetchProviderRecommendations(settings.region, selectedGenreID);
+    const providers = await fetchProviderRecommendations(settings.region, selectedGenreID);
+    if (generation !== providerRecommendGeneration) return;
+    recommendProviders = providers;
   } catch {
+    if (generation !== providerRecommendGeneration) return;
     recommendProviders = [];
   } finally {
+    if (generation !== providerRecommendGeneration) return;
     loadingProviderRecommend = false;
     updateResults();
   }

@@ -42,6 +42,19 @@ const PROVIDER_IDS: Record<string, number[]> = {
   GB: [8, 337, 350, 119, 39],
 };
 
+const CATALOG_TTL_MS = 60 * 60 * 1000;
+const TRENDING_TTL_MS = 30 * 60 * 1000;
+const catalogCache = new Map<string, { map: Map<number, { name: string; logo?: string }>; expires: number }>();
+
+interface TrendingPool {
+  rows: Array<{ item: MediaItem; kind: MediaKind; rank: number }>;
+  enMovies: Map<number, MediaItem>;
+  enTV: Map<number, MediaItem>;
+  expires: number;
+}
+
+let trendingPoolCache: TrendingPool | undefined;
+
 interface MediaItem {
   id: number;
   media_type?: string;
@@ -55,6 +68,8 @@ interface MediaItem {
   first_air_date?: string;
   vote_average?: number;
   vote_count?: number;
+  popularity?: number;
+  genre_ids?: number[];
 }
 
 interface ProviderDTO {
@@ -103,10 +118,6 @@ function toHit(item: MediaItem, kind: MediaKind, english?: MediaItem, provider?:
   };
 }
 
-function mergeLocalized(ko: MediaItem[], en: MediaItem[], kind: MediaKind, provider?: { id: number; name: string; logo?: string }): SearchHit[] {
-  const enByID = new Map(en.map((item) => [item.id, item]));
-  return ko.map((item) => toHit(item, kind, enByID.get(item.id), provider));
-}
 
 export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
   const [ko, en] = await Promise.all([
@@ -129,6 +140,9 @@ export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
 }
 
 async function providerCatalog(region: string): Promise<Map<number, { name: string; logo?: string }>> {
+  const cached = catalogCache.get(region);
+  if (cached && cached.expires > Date.now()) return cached.map;
+
   const [movies, tv] = await Promise.all([
     tmdb<{ results?: ProviderDTO[] }>("/watch/providers/movie", { watch_region: region }),
     tmdb<{ results?: ProviderDTO[] }>("/watch/providers/tv", { watch_region: region }),
@@ -139,7 +153,51 @@ async function providerCatalog(region: string): Promise<Map<number, { name: stri
       map.set(item.provider_id, { name: item.provider_name, logo: item.logo_path });
     }
   }
+  catalogCache.set(region, { map, expires: Date.now() + CATALOG_TTL_MS });
   return map;
+}
+
+async function getTrendingPool(limit = 20): Promise<TrendingPool> {
+  if (trendingPoolCache && trendingPoolCache.expires > Date.now()) return trendingPoolCache;
+
+  const [koMovies, koTV, enMovies, enTV] = await Promise.all([
+    tmdb<{ results: MediaItem[] }>("/trending/movie/week", { language: "ko-KR" }),
+    tmdb<{ results: MediaItem[] }>("/trending/tv/week", { language: "ko-KR" }),
+    tmdb<{ results: MediaItem[] }>("/trending/movie/week", { language: "en-US" }),
+    tmdb<{ results: MediaItem[] }>("/trending/tv/week", { language: "en-US" }),
+  ]);
+
+  const rows: TrendingPool["rows"] = [];
+  (koMovies.results ?? []).slice(0, limit).forEach((item, rank) => rows.push({ item, kind: "movie", rank }));
+  (koTV.results ?? []).slice(0, limit).forEach((item, rank) => rows.push({ item, kind: "tv", rank }));
+
+  trendingPoolCache = {
+    rows,
+    enMovies: new Map((enMovies.results ?? []).map((item) => [item.id, item])),
+    enTV: new Map((enTV.results ?? []).map((item) => [item.id, item])),
+    expires: Date.now() + TRENDING_TTL_MS,
+  };
+  return trendingPoolCache;
+}
+
+function matchesGenre(item: MediaItem, kind: MediaKind, genre?: RecommendGenre): boolean {
+  if (!genre) return true;
+  const target = kind === "movie" ? genre.movieID : genre.tvID;
+  if (!target) return true;
+  return (item.genre_ids ?? []).includes(target);
+}
+
+function discoverRows(
+  ko: MediaItem[],
+  en: MediaItem[],
+  kind: MediaKind,
+  provider: { id: number; name: string; logo?: string },
+): Array<{ hit: SearchHit; popularity: number }> {
+  const enByID = new Map(en.map((item) => [item.id, item]));
+  return ko.map((item) => ({
+    hit: toHit(item, kind, enByID.get(item.id), provider),
+    popularity: item.popularity ?? 0,
+  }));
 }
 
 async function fetchForProvider(
@@ -153,31 +211,61 @@ async function fetchForProvider(
     language: "ko-KR",
     watch_region: region,
     sort_by: "popularity.desc",
-    page: "1",
     with_watch_providers: String(providerID),
     with_watch_monetization_types: "flatrate|free|ads",
   };
   const provider = { id: providerID, name: meta.name, logo: meta.logo };
   const movieQuery = genre?.movieID ? { ...base, with_genres: String(genre.movieID) } : base;
   const tvQuery = genre?.tvID ? { ...base, with_genres: String(genre.tvID) } : base;
-  const [koMovies, koTV, enMovies, enTV] = await Promise.all([
-    tmdb<{ results: MediaItem[] }>("/discover/movie", movieQuery),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", tvQuery),
-    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, language: "en-US" }),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, language: "en-US" }),
+
+  const [koMovies, koMoviesP2, koTV, koTVP2, enMovies, enMoviesP2, enTV, enTVP2, trending] = await Promise.all([
+    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, page: "1" }),
+    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, page: "2" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, page: "1" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, page: "2" }),
+    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, language: "en-US", page: "1" }),
+    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, language: "en-US", page: "2" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, language: "en-US", page: "1" }),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, language: "en-US", page: "2" }),
+    getTrendingPool(),
   ]);
+
+  const discover = [
+    ...discoverRows([...(koMovies.results ?? []), ...(koMoviesP2.results ?? [])], [...(enMovies.results ?? []), ...(enMoviesP2.results ?? [])], "movie", provider),
+    ...discoverRows([...(koTV.results ?? []), ...(koTVP2.results ?? [])], [...(enTV.results ?? []), ...(enTVP2.results ?? [])], "tv", provider),
+  ];
+
+  const discoverByID = new Map<string, { hit: SearchHit; popularity: number }>();
+  for (const row of discover) {
+    const existing = discoverByID.get(row.hit.id);
+    if (!existing || row.popularity > existing.popularity) discoverByID.set(row.hit.id, row);
+  }
+
+  const hits: SearchHit[] = [];
   const seen = new Set<string>();
-  const hits = [
-    ...mergeLocalized(koMovies.results ?? [], enMovies.results ?? [], "movie", provider),
-    ...mergeLocalized(koTV.results ?? [], enTV.results ?? [], "tv", provider),
-  ]
-    .filter((hit) => {
-      if (seen.has(hit.id)) return false;
-      seen.add(hit.id);
-      return true;
-    })
-    .sort((a, b) => b.voteCount - a.voteCount || b.voteAverage - a.voteAverage)
-    .slice(0, limit);
+
+  if (!genre) {
+    for (const { item, kind } of [...trending.rows].sort((a, b) => a.rank - b.rank)) {
+      if (!matchesGenre(item, kind, genre)) continue;
+      const id = `${kind}-${item.id}`;
+      const row = discoverByID.get(id);
+      if (!row || seen.has(id)) continue;
+      seen.add(id);
+      hits.push(row.hit);
+      if (hits.length >= limit) return hits;
+    }
+  }
+
+  const rest = [...discoverByID.values()]
+    .filter((row) => !seen.has(row.hit.id))
+    .sort((a, b) => b.popularity - a.popularity);
+
+  for (const row of rest) {
+    seen.add(row.hit.id);
+    hits.push(row.hit);
+    if (hits.length >= limit) break;
+  }
+
   return hits;
 }
 
@@ -185,14 +273,15 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
   const genre = RECOMMEND_GENRES.find((item) => item.id === genreID);
   const catalog = await providerCatalog(region);
   const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
-  const providers: RecommendProvider[] = [];
-  for (const id of ids) {
-    const meta = catalog.get(id) ?? { name: `Provider ${id}` };
-    const hits = await fetchForProvider(region, id, meta, genreID === 0 ? undefined : genre, 8);
-    if (!hits.length) continue;
-    providers.push({ id, name: meta.name, logo: meta.logo, hits });
-  }
-  return providers;
+  const rows = await Promise.all(
+    ids.map(async (id) => {
+      const meta = catalog.get(id) ?? { name: `Provider ${id}` };
+      const hits = await fetchForProvider(region, id, meta, genreID === 0 ? undefined : genre, 8);
+      if (!hits.length) return null;
+      return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
+    }),
+  );
+  return rows.filter((row): row is RecommendProvider => row !== null);
 }
 
 export async function loadRecommendations(region: string, genreID = 0): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {
