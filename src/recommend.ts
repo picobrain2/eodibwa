@@ -54,6 +54,28 @@ const CATALOG_TTL_MS = 60 * 60 * 1000;
 const CHART_TTL_MS = 30 * 60 * 1000;
 const CHART_SIZE = 36;
 const BATCH_SIZE = 6;
+const RECENT_POPULAR_DAYS = 7;
+
+function isoDate(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function recentDateRange(days = RECENT_POPULAR_DAYS): { gte: string; lte: string } {
+  const lte = new Date();
+  const gte = new Date();
+  gte.setDate(gte.getDate() - days);
+  return { gte: isoDate(gte), lte: isoDate(lte) };
+}
+
+function applyRecentDateFilter(query: Record<string, string>, kind: MediaKind, range = recentDateRange()): void {
+  if (kind === "tv") {
+    query["air_date.gte"] = range.gte;
+    query["air_date.lte"] = range.lte;
+    return;
+  }
+  query["primary_release_date.gte"] = range.gte;
+  query["primary_release_date.lte"] = range.lte;
+}
 
 const catalogCache = new Map<string, { map: Map<number, { name: string; logo?: string }>; expires: number }>();
 
@@ -157,6 +179,10 @@ function matchesGenre(genreIDs: number[], kind: MediaKind, genre?: RecommendGenr
   return genreIDs.includes(target);
 }
 
+export function recentPopularRange(): { gte: string; lte: string } {
+  return recentDateRange();
+}
+
 export function invalidateRecommendChart(): void {
   chartCache = undefined;
   discoverCache.clear();
@@ -164,22 +190,42 @@ export function invalidateRecommendChart(): void {
 }
 
 export async function fetchTrending(limit = 10): Promise<SearchHit[]> {
-  const [ko, en] = await Promise.all([
-    tmdb<{ results: MediaItem[] }>("/trending/all/day", { language: "ko-KR" }),
-    tmdb<{ results: MediaItem[] }>("/trending/all/day", { language: "en-US" }),
+  const range = recentDateRange();
+  const base: Record<string, string> = {
+    language: "ko-KR",
+    sort_by: "popularity.desc",
+    page: "1",
+  };
+  const tvQuery = { ...base };
+  const movieQuery = { ...base };
+  applyRecentDateFilter(tvQuery, "tv", range);
+  applyRecentDateFilter(movieQuery, "movie", range);
+
+  const [koTv, enTv, koMovie, enMovie] = await Promise.all([
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", tvQuery),
+    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...tvQuery, language: "en-US" }),
+    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/movie", movieQuery),
+    tmdb<{ results: MediaItem[] }>("/discover/movie", { ...movieQuery, language: "en-US" }),
   ]);
-  const enByKey = new Map(
-    (en.results ?? [])
-      .filter((item) => item.media_type === "movie" || item.media_type === "tv")
-      .map((item) => [`${item.media_type}-${item.id}`, item]),
-  );
-  const hits: SearchHit[] = [];
-  for (const item of ko.results ?? []) {
-    const kind = item.media_type === "movie" || item.media_type === "tv" ? item.media_type : undefined;
-    if (!kind) continue;
-    hits.push(toHit(item, kind, enByKey.get(`${kind}-${item.id}`)));
-    if (hits.length >= limit) break;
-  }
+
+  const enByKey = new Map<string, MediaItem>();
+  for (const item of enTv.results ?? []) enByKey.set(`tv-${item.id}`, item);
+  for (const item of enMovie.results ?? []) enByKey.set(`movie-${item.id}`, item);
+
+  const seen = new Set<string>();
+  const hits = [
+    ...(koTv.results ?? []).map((item) => ({ item, kind: "tv" as MediaKind })),
+    ...(koMovie.results ?? []).map((item) => ({ item, kind: "movie" as MediaKind })),
+  ]
+    .sort((a, b) => (b.item.popularity ?? 0) - (a.item.popularity ?? 0))
+    .flatMap(({ item, kind }) => {
+      const key = `${kind}-${item.id}`;
+      if (seen.has(key)) return [];
+      seen.add(key);
+      return [toHit(item, kind, enByKey.get(key))];
+    })
+    .slice(0, limit);
+
   return hits;
 }
 
@@ -326,6 +372,7 @@ async function fetchDiscoverMedia(
   };
   const genreID = kind === "movie" ? genre?.movieID : genre?.tvID;
   if (genreID) query.with_genres = String(genreID);
+  applyRecentDateFilter(query, kind);
 
   const [ko, en] = await Promise.all([
     tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, query),
@@ -347,7 +394,8 @@ async function fetchDiscoverProviderHits(
   genre?: RecommendGenre,
   limit = 8,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}`;
+  const range = recentDateRange();
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-${range.gte}-${range.lte}`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 

@@ -101,6 +101,7 @@ body { background: var(--bg); color: var(--text); }
 .recommend { padding-bottom: 12px; }
 .recommend-title { margin: 12px 16px 8px; font-size: 18px; }
 .recommend-section { margin: 14px 16px 6px; font-size: 13px; color: var(--gold); font-weight: 700; }
+.recommend-section small { font-size: 10px; font-weight: 500; color: var(--muted); margin-left: 6px; }
 .genre-tabs {
   display: flex;
   flex-wrap: wrap;
