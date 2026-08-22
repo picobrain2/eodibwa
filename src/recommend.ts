@@ -51,6 +51,9 @@ export function regionProviderIDs(region: string): number[] {
 /** KR local OTTs — use TMDB discover + watch provider (not network IDs). */
 const TMDB_DISCOVER_PROVIDERS = new Set([1883, 356, 97, 1881]);
 
+/** Skip strict KR-origin filter — catalog includes global/licensed titles. */
+const RELAXED_ORIGIN_PROVIDERS = new Set([1881]);
+
 /** Lower = preferred owner when a title is on multiple OTTs (global platforms win over aggregators). */
 const PROVIDER_PRIORITY: Record<number, number> = {
   8: 1,
@@ -377,6 +380,36 @@ function projectSingleProvider(
     }));
 }
 
+async function fetchDiscoverPages(
+  kind: MediaKind,
+  query: Record<string, string>,
+  pages = 2,
+): Promise<{ ko: (MediaItem & { popularity?: number })[]; en: MediaItem[] }> {
+  const pageNums = Array.from({ length: pages }, (_, index) => String(index + 1));
+  const [koPages, en1] = await Promise.all([
+    Promise.all(pageNums.map((page) =>
+      tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, { ...query, page }),
+    )),
+    tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, page: "1", language: "en-US" }),
+  ]);
+
+  const merged = new Map<number, MediaItem & { popularity?: number }>();
+  for (const page of koPages) {
+    for (const item of page.results ?? []) merged.set(item.id, item);
+  }
+
+  return { ko: [...merged.values()], en: en1.results ?? [] };
+}
+
+function rowsFromDiscover(
+  ko: (MediaItem & { popularity?: number })[],
+  en: MediaItem[],
+  kind: MediaKind,
+): DiscoverRow[] {
+  const enByID = new Map(en.map((item) => [item.id, item]));
+  return ko.map((item) => ({ item, kind, english: enByID.get(item.id) }));
+}
+
 async function fetchDiscoverMedia(
   kind: MediaKind,
   region: string,
@@ -392,30 +425,78 @@ async function fetchDiscoverMedia(
     sort_by: "popularity.desc",
     page: "1",
   };
-  if (region === "KR") query.with_origin_country = "KR";
+  if (region === "KR" && !RELAXED_ORIGIN_PROVIDERS.has(providerID)) query.with_origin_country = "KR";
   const genreID = kind === "movie" ? genre?.movieID : genre?.tvID;
   if (genreID) query.with_genres = String(genreID);
-  if (mode === "premiere" && region === "KR" && kind === "tv") {
+  if (mode === "premiere" && region === "KR" && kind === "tv" && !RELAXED_ORIGIN_PROVIDERS.has(providerID)) {
     query.sort_by = "vote_count.desc";
     query["vote_count.gte"] = "5";
   }
   applyRecentDateFilter(query, kind, mode);
 
-  const [ko1, ko2, en1] = await Promise.all([
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, { ...query, page: "1" }),
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, { ...query, page: "2" }),
-    tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, page: "1", language: "en-US" }),
+  const { ko, en } = await fetchDiscoverPages(kind, query);
+  return rowsFromDiscover(ko, en, kind);
+}
+
+async function fetchRelaxedProviderMedia(
+  region: string,
+  providerID: number,
+  genre: RecommendGenre | undefined,
+): Promise<DiscoverRow[]> {
+  const query: Record<string, string> = {
+    language: "ko-KR",
+    watch_region: region,
+    with_watch_providers: String(providerID),
+    with_watch_monetization_types: "flatrate",
+    sort_by: "popularity.desc",
+    page: "1",
+  };
+  const genreID = genre?.tvID ?? genre?.movieID;
+  if (genreID) query.with_genres = String(genreID);
+
+  const [tv, movie] = await Promise.all([
+    fetchDiscoverPages("tv", query),
+    genre?.tvID && !genre.movieID
+      ? Promise.resolve({ ko: [], en: [] })
+      : fetchDiscoverPages("movie", query),
   ]);
 
-  const enByID = new Map((en1.results ?? []).map((item) => [item.id, item]));
-  const merged = new Map<number, MediaItem & { popularity?: number }>();
-  for (const item of [...(ko1.results ?? []), ...(ko2.results ?? [])]) merged.set(item.id, item);
+  return [
+    ...rowsFromDiscover(tv.ko, tv.en, "tv"),
+    ...rowsFromDiscover(movie.ko, movie.en, "movie"),
+  ];
+}
 
-  return [...merged.values()].map((item) => ({
-    item,
-    kind,
-    english: enByID.get(item.id),
+async function fetchGenreMedia(
+  region: string,
+  providerID: number,
+  genre: RecommendGenre,
+): Promise<DiscoverRow[]> {
+  const query: Record<string, string> = {
+    language: "ko-KR",
+    watch_region: region,
+    with_watch_providers: String(providerID),
+    with_watch_monetization_types: "flatrate",
+    sort_by: genre.tvID === TV_GENRE_REALITY ? "first_air_date.desc" : "popularity.desc",
+    page: "1",
+  };
+  if (region === "KR" && !RELAXED_ORIGIN_PROVIDERS.has(providerID)) query.with_origin_country = "KR";
+  if (genre.tvID === TV_GENRE_REALITY && region === "KR" && providerID === 1883) {
+    applyRecentDateFilter(query, "tv", "premiere");
+  }
+
+  const kinds: MediaKind[] = [
+    ...(genre.movieID ? (["movie"] as MediaKind[]) : []),
+    ...(genre.tvID ? (["tv"] as MediaKind[]) : []),
+  ];
+  const rows = await Promise.all(kinds.map(async (kind) => {
+    const genreID = kind === "movie" ? genre.movieID : genre.tvID;
+    if (!genreID) return [] as DiscoverRow[];
+    const { ko, en } = await fetchDiscoverPages(kind, { ...query, with_genres: String(genreID) }, 1);
+    return rowsFromDiscover(ko, en, kind);
   }));
+
+  return rows.flat();
 }
 
 async function fetchTvingVarietyMedia(): Promise<DiscoverRow[]> {
@@ -426,26 +507,13 @@ async function fetchTvingVarietyMedia(): Promise<DiscoverRow[]> {
     with_watch_monetization_types: "flatrate",
     with_genres: String(TV_GENRE_REALITY),
     with_origin_country: "KR",
-    sort_by: "popularity.desc",
+    sort_by: "first_air_date.desc",
     page: "1",
   };
-  applyRecentDateFilter(query, "tv", "air");
+  applyRecentDateFilter(query, "tv", "premiere");
 
-  const [ko1, ko2, en1] = await Promise.all([
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "1" }),
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "2" }),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...query, page: "1", language: "en-US" }),
-  ]);
-
-  const enByID = new Map((en1.results ?? []).map((item) => [item.id, item]));
-  const merged = new Map<number, MediaItem & { popularity?: number }>();
-  for (const item of [...(ko1.results ?? []), ...(ko2.results ?? [])]) merged.set(item.id, item);
-
-  return [...merged.values()].map((item) => ({
-    item,
-    kind: "tv" as MediaKind,
-    english: enByID.get(item.id),
-  }));
+  const { ko, en } = await fetchDiscoverPages("tv", query, 1);
+  return rowsFromDiscover(ko, en, "tv");
 }
 
 async function fetchTvingBroadcastMedia(
@@ -466,21 +534,8 @@ async function fetchTvingBroadcastMedia(
   if (genreID) query.with_genres = String(genreID);
   applyRecentDateFilter(query, "tv", "premiere");
 
-  const [ko1, ko2, en1] = await Promise.all([
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "1" }),
-    tmdb<{ results: (MediaItem & { popularity?: number })[] }>("/discover/tv", { ...query, page: "2" }),
-    tmdb<{ results: MediaItem[] }>("/discover/tv", { ...query, page: "1", language: "en-US" }),
-  ]);
-
-  const enByID = new Map((en1.results ?? []).map((item) => [item.id, item]));
-  const merged = new Map<number, MediaItem & { popularity?: number }>();
-  for (const item of [...(ko1.results ?? []), ...(ko2.results ?? [])]) merged.set(item.id, item);
-
-  return [...merged.values()].map((item) => ({
-    item,
-    kind: "tv" as MediaKind,
-    english: enByID.get(item.id),
-  }));
+  const { ko, en } = await fetchDiscoverPages("tv", query);
+  return rowsFromDiscover(ko, en, "tv");
 }
 
 function rowsToHits(
@@ -521,6 +576,32 @@ async function fetchDiscoverSupplement(
 ): Promise<SearchHit[]> {
   if (limit <= 0) return [];
 
+  const hits: SearchHit[] = [];
+
+  if (RELAXED_ORIGIN_PROVIDERS.has(providerID)) {
+    const rows = await fetchRelaxedProviderMedia(region, providerID, genre);
+    for (const hit of rowsToHits(rows, provider, seen, limit, "preserve")) {
+      hits.push(hit);
+      if (hits.length >= limit) return hits;
+    }
+    return hits;
+  }
+
+  if (genre && (genre.tvID || genre.movieID) && !(genre.tvID && genre.movieID)) {
+    const rows = await fetchGenreMedia(region, providerID, genre);
+    for (const hit of rowsToHits(
+      rows,
+      provider,
+      seen,
+      limit,
+      genre.tvID === TV_GENRE_REALITY ? "preserve" : "votes",
+    )) {
+      hits.push(hit);
+      if (hits.length >= limit) return hits;
+    }
+    return hits;
+  }
+
   const kinds: MediaKind[] = genre
     ? [
       ...(genre.movieID ? (["movie"] as MediaKind[]) : []),
@@ -529,25 +610,32 @@ async function fetchDiscoverSupplement(
     : ["tv", "movie"];
   const mediaKinds = kinds.length ? kinds : (["tv", "movie"] as MediaKind[]);
 
-  const hits: SearchHit[] = [];
-
   // Variety shows (예능) have very low vote_count on TMDB — fetch separately for TVING "전체".
   if (providerID === 1883 && region === "KR" && !genre) {
     const varietyRows = await fetchTvingVarietyMedia();
-    for (const hit of rowsToHits(varietyRows, provider, seen, Math.min(TVING_VARIETY_SLOTS, limit), "popularity")) {
+    for (const hit of rowsToHits(varietyRows, provider, seen, Math.min(TVING_VARIETY_SLOTS, limit), "preserve")) {
       hits.push(hit);
       if (hits.length >= limit) return hits;
     }
   }
 
+  const tvModes: Array<"premiere" | "air"> = ["premiere", "air"];
+  const fetches: Array<{ kind: MediaKind; mode: "premiere" | "air" | "release" }> = [];
   for (const kind of mediaKinds) {
-    const modes: Array<"premiere" | "air" | "release"> = kind === "tv" ? ["premiere", "air"] : ["release"];
-    for (const mode of modes) {
-      const rows = await fetchDiscoverMedia(kind, region, providerID, genre, mode);
-      for (const hit of rowsToHits(rows, provider, seen, limit - hits.length)) {
-        hits.push(hit);
-        if (hits.length >= limit) return hits;
-      }
+    if (kind === "tv") {
+      for (const mode of tvModes) fetches.push({ kind, mode });
+    } else {
+      fetches.push({ kind, mode: "release" });
+    }
+  }
+
+  const batches = await Promise.all(
+    fetches.map(({ kind, mode }) => fetchDiscoverMedia(kind, region, providerID, genre, mode)),
+  );
+  for (const rows of batches) {
+    for (const hit of rowsToHits(rows, provider, seen, limit - hits.length)) {
+      hits.push(hit);
+      if (hits.length >= limit) return hits;
     }
   }
 
@@ -571,7 +659,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v4`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v5`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
@@ -621,12 +709,10 @@ async function dedupeExclusiveProviders(
     if (winner !== undefined) owner.set(hitId, winner);
   }
 
-  return providers
-    .map((group) => ({
-      ...group,
-      hits: group.hits.filter((hit) => owner.get(hit.id) === group.id).slice(0, DISPLAY_LIMIT),
-    }))
-    .filter((group) => group.hits.length > 0);
+  return providers.map((group) => ({
+    ...group,
+    hits: group.hits.filter((hit) => owner.get(hit.id) === group.id).slice(0, DISPLAY_LIMIT),
+  }));
 }
 
 export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
@@ -655,8 +741,7 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
 
       if (TMDB_DISCOVER_PROVIDERS.has(id)) {
         const hits = await fetchProviderPopularHits(region, id, provider, genre, entries, catalog);
-        if (hits.length) return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
-        return null;
+        return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
       }
 
       const hits = projectSingleProvider(entries, catalog, genre, id, CANDIDATE_LIMIT);

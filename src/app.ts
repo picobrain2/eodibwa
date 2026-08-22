@@ -198,7 +198,11 @@ function activeProviderName(): string {
 }
 
 function visibleRecommendProviders(): RecommendProvider[] {
-  return recommendProviders.filter((group) => group.id === selectedProviderID);
+  const match = recommendProviders.filter((group) => group.id === selectedProviderID);
+  if (match.length) return match;
+  const meta = providerTabOptions().find((item) => item.id === selectedProviderID);
+  if (!meta) return [];
+  return [{ id: meta.id, name: meta.name, logo: meta.logo, hits: [] }];
 }
 
 function ottTabsHTML(): string {
