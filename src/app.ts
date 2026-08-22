@@ -1,5 +1,6 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
 import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
+import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
 import { translateReviews } from "./translate";
 import { settings } from "./settings";
@@ -23,6 +24,7 @@ let selectedGenreID = 0;
 let loadingRecommend = false;
 let loadingProviderRecommend = false;
 let recommendLoaded = false;
+let nowPlayingIDs = new Set<number>();
 
 function allRecommendHits(): SearchHit[] {
   return recommendProviders.flatMap((group) => group.hits);
@@ -54,16 +56,25 @@ function ottGroupHTML(group: RecommendProvider): string {
     </div>`;
 }
 
+function isInTheaters(hit: SearchHit): boolean {
+  return hit.kind === "movie" && nowPlayingIDs.has(hit.tmdbID);
+}
+
+function theaterBadgeHTML(): string {
+  return `<span class="theater-badge">극장 상영중</span>`;
+}
+
 function hitButton(hit: SearchHit, selectedId?: string): string {
   const meta = [hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · ");
   const provider = hit.providerLogo
     ? `<img class="hit-provider" alt="" title="${escapeHTML(hit.providerName ?? "")}" src="${posterURL(hit.providerLogo, "w92") ?? ""}" />`
     : (hit.providerName ? `<span class="hit-provider-name">${escapeHTML(hit.providerName)}</span>` : "");
+  const theater = isInTheaters(hit) ? theaterBadgeHTML() : "";
   return `
     <button class="hit ${selectedId === hit.id ? "selected" : ""}" data-id="${hit.id}">
       <img alt="" src="${posterURL(hit.posterPath) ?? ""}" />
       <span>
-        <b>${escapeHTML(hit.titleKO || hit.titleEN)}</b>
+        <b>${escapeHTML(hit.titleKO || hit.titleEN)}${theater}</b>
         <small>${escapeHTML(meta)}</small>
       </span>
       ${provider}
@@ -201,8 +212,16 @@ function updateResults(): void {
 function updateDetail(): void {
   detailEl.innerHTML = detailHTML();
   detailEl.querySelector("#region")?.addEventListener("change", (event) => {
-    settings.region = (event.target as HTMLSelectElement).value;
-    updateDetail();
+    const next = (event.target as HTMLSelectElement).value;
+    if (next === settings.region) return;
+    settings.region = next;
+    invalidateNowPlaying();
+    void refreshNowPlaying().then(() => {
+      if (detail?.kind === "movie") {
+        detail.inTheaters = nowPlayingIDs.has(detail.tmdbID);
+      }
+      updateDetail();
+    });
   });
 }
 
@@ -217,13 +236,14 @@ function detailHTML(): string {
   const region = settings.region;
   const local = d.availability.find((item) => item.countryCode === region);
   const offers: WatchOffer[] = ["flatrate", "free", "ads", "rent", "buy"];
+  const theaterBadge = d.kind === "movie" && d.inTheaters ? theaterBadgeHTML() : "";
   return `
     <div class="header">
       <img class="poster" alt="" src="${posterURL(d.posterPath, "w500") ?? ""}" />
       <div>
         <h1>${escapeHTML(primary)}</h1>
         ${secondary ? `<p>${escapeHTML(secondary)}</p>` : ""}
-        <div class="pills">${meta.map((item) => `<span>${escapeHTML(String(item))}</span>`).join("")}</div>
+        <div class="pills">${theaterBadge}${meta.map((item) => `<span>${escapeHTML(String(item))}</span>`).join("")}</div>
         ${d.tagline ? `<p><i>${escapeHTML(d.tagline)}</i></p>` : ""}
         ${d.director ? `<p>감독/제작 ${escapeHTML(d.director)}</p>` : ""}
         ${d.networks.length ? `<p>방송/공개 ${escapeHTML(d.networks.join(" · "))}</p>` : ""}
@@ -433,12 +453,24 @@ async function loadSelected(): Promise<void> {
   }
 }
 
+async function refreshNowPlaying(): Promise<void> {
+  if (!settings.hasTMDB) {
+    nowPlayingIDs = new Set();
+    return;
+  }
+  nowPlayingIDs = await loadNowPlaying(settings.region);
+  updateResults();
+}
+
 export async function loadRecommendations(): Promise<void> {
   if (!settings.hasTMDB || loadingRecommend || recommendLoaded) return;
   loadingRecommend = true;
   updateResults();
   try {
-    const data = await fetchRecommendations(settings.region, selectedGenreID);
+    const [data] = await Promise.all([
+      fetchRecommendations(settings.region, selectedGenreID),
+      refreshNowPlaying(),
+    ]);
     recommendTrending = data.trending;
     recommendProviders = data.providers;
     recommendLoaded = true;

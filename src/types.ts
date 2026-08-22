@@ -17,6 +17,7 @@ export interface SearchHit {
   providerLogo?: string;
   providerName?: string;
   providerID?: number;
+  inTheaters?: boolean;
 }
 
 export interface WatchProvider {
@@ -70,6 +71,7 @@ export interface TitleDetail {
   extraLinks: { name: string; url: string }[];
   wikipediaURL?: string;
   popularReviews: PopularReview[];
+  inTheaters?: boolean;
 }
 
 export interface PopularReview {

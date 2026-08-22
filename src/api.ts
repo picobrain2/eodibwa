@@ -1,5 +1,6 @@
 import { containsHangul, hangulSpaceVariants, isStrongMatch, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
+import { loadNowPlaying } from "./theaters";
 import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
 
 const TMDB = "https://api.themoviedb.org/3";
@@ -252,6 +253,12 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
     enrichTVMaze(detail),
     enrichWikipedia(detail),
   ]);
+
+  if (kind === "movie") {
+    const playing = await loadNowPlaying(settings.region);
+    detail.inTheaters = playing.has(id);
+  }
+
   return detail;
 }
 
