@@ -126,6 +126,7 @@ function updateDetail(): void {
 
 function detailHTML(): string {
   if (loadingDetail && !detail) return `<div class="loading">정보를 불러오는 중…</div>`;
+  if (detailError && !detail) return `<div class="empty">${escapeHTML(detailError)}</div>`;
   if (!detail) return `<div class="empty">왼쪽에서 작품을 고르면<br>어디서 볼 수 있는지와 평점을 보여 줍니다.</div>`;
   const d = detail;
   const primary = d.titleKO || d.titleEN;
@@ -282,7 +283,6 @@ async function runSearch(raw: string): Promise<void> {
   }
 
   const generation = ++searchGeneration;
-  detailGeneration += 1;
   searching = true;
   error = "";
   updateResults();
@@ -293,28 +293,34 @@ async function runSearch(raw: string): Promise<void> {
     if (searchInput.value.trim() !== trimmed) return;
     hits = nextHits;
     selected = hits[0];
-    searching = false;
     updateResults();
     if (selected) await loadSelected();
   } catch (err) {
     if (generation !== searchGeneration) return;
-    searching = false;
     error = err instanceof Error ? err.message : "검색에 실패했습니다.";
     updateResults();
+  } finally {
+    if (generation === searchGeneration) {
+      searching = false;
+      updateResults();
+    }
   }
 }
 
 let detailGeneration = 0;
 let loadingReviews = false;
+let detailError = "";
 
 async function loadSelected(): Promise<void> {
   if (!selected) return;
+  const hit = selected;
   const generation = ++detailGeneration;
   loadingDetail = true;
   loadingReviews = false;
+  detailError = "";
   updateDetail();
   try {
-    const next = await fetchDetail(selected.kind, selected.tmdbID);
+    const next = await fetchDetail(hit.kind, hit.tmdbID);
     if (generation !== detailGeneration) return;
     detail = next;
     loadingDetail = false;
@@ -322,15 +328,13 @@ async function loadSelected(): Promise<void> {
 
     loadingReviews = true;
     updateDetail();
-    const reviews = await fetchPopularReviews(selected.kind, selected.tmdbID, next.titleKO, next.titleEN);
+    const reviews = await fetchPopularReviews(hit.kind, hit.tmdbID, next.titleKO, next.titleEN);
     if (generation !== detailGeneration || !detail) return;
     detail.popularReviews = reviews;
   } catch (err) {
     if (generation !== detailGeneration) return;
-    error = err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.";
-    loadingDetail = false;
-    updateDetail();
-    return;
+    detailError = err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.";
+    detail = undefined;
   } finally {
     if (generation !== detailGeneration) return;
     loadingReviews = false;
