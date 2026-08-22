@@ -105,6 +105,9 @@ const TVING_BROADCAST_NETWORKS = "866|885|813|989|2710";
 const TV_GENRE_REALITY = 10764;
 const TVING_VARIETY_SLOTS = 4;
 
+/** TMDB network for Coupang Play originals (watch provider link often missing, e.g. SNL 코리아). */
+const COUPANG_PLAY_NETWORK = "5169";
+
 function isoDate(date: Date): string {
   return date.toISOString().slice(0, 10);
 }
@@ -442,6 +445,32 @@ function applyVarietyOnAirFilter(query: Record<string, string>): void {
   applyRecentDateFilter(query, "tv", "air", recentDateRange(RECENT_AIR_DAYS));
 }
 
+function mergeDiscoverRows(...groups: DiscoverRow[][]): DiscoverRow[] {
+  const merged = new Map<number, DiscoverRow>();
+  for (const group of groups) {
+    for (const row of group) merged.set(row.item.id, row);
+  }
+  return [...merged.values()];
+}
+
+async function fetchCoupangNetworkMedia(
+  genre: RecommendGenre | undefined,
+): Promise<DiscoverRow[]> {
+  const query: Record<string, string> = {
+    language: "ko-KR",
+    watch_region: "KR",
+    with_networks: COUPANG_PLAY_NETWORK,
+    sort_by: "popularity.desc",
+    page: "1",
+  };
+  const genreID = genre?.tvID ?? genre?.movieID;
+  if (genreID) query.with_genres = String(genreID);
+  if (genre?.tvID === TV_GENRE_REALITY) applyVarietyOnAirFilter(query);
+
+  const { ko, en } = await fetchDiscoverPages("tv", query);
+  return rowsFromDiscover(ko, en, "tv");
+}
+
 async function fetchRelaxedProviderMedia(
   region: string,
   providerID: number,
@@ -461,17 +490,21 @@ async function fetchRelaxedProviderMedia(
   const tvQuery = { ...query };
   if (genre?.tvID === TV_GENRE_REALITY) applyVarietyOnAirFilter(tvQuery);
 
-  const [tv, movie] = await Promise.all([
+  const [tv, movie, networkRows] = await Promise.all([
     fetchDiscoverPages("tv", tvQuery),
     genre?.tvID && !genre.movieID
       ? Promise.resolve({ ko: [], en: [] })
       : fetchDiscoverPages("movie", query),
+    providerID === 1881 && region === "KR"
+      ? fetchCoupangNetworkMedia(genre)
+      : Promise.resolve([] as DiscoverRow[]),
   ]);
 
-  return [
-    ...rowsFromDiscover(tv.ko, tv.en, "tv"),
-    ...rowsFromDiscover(movie.ko, movie.en, "movie"),
-  ];
+  return mergeDiscoverRows(
+    networkRows,
+    rowsFromDiscover(tv.ko, tv.en, "tv"),
+    rowsFromDiscover(movie.ko, movie.en, "movie"),
+  );
 }
 
 async function fetchGenreMedia(
@@ -666,7 +699,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v7`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v8`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
@@ -711,8 +744,11 @@ async function dedupeExclusiveProviders(
   });
 
   const owner = new Map<string, number>();
-  for (const hitId of uniqueHits.keys()) {
-    const winner = pickExclusiveProvider(providerCache.get(hitId) ?? [], tracked);
+  for (const [hitId, hit] of uniqueHits) {
+    let winner = pickExclusiveProvider(providerCache.get(hitId) ?? [], tracked);
+    if (winner === undefined && hit.providerID !== undefined && tracked.has(hit.providerID)) {
+      winner = hit.providerID;
+    }
     if (winner !== undefined) owner.set(hitId, winner);
   }
 
