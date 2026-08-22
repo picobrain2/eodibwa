@@ -1,4 +1,4 @@
-import { fetchDetail, fetchPopularReviews, providerLink, searchTitles, watchaSearchURL } from "./api";
+import { fetchDetail, fetchPopularReviews, providerLink, refineSearchWithImdb, searchTitles, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
@@ -691,7 +691,14 @@ async function runSearch(raw: string): Promise<void> {
     hits = prioritizeNowPlaying(nextHits, playing);
     selected = isMobileLayout() ? undefined : hits[0];
     updateResults();
-    if (selected) await loadSelected();
+    if (selected) void loadSelected();
+
+    void refineSearchWithImdb(nextHits, trimmed).then((refined) => {
+      if (generation !== searchGeneration) return;
+      if (searchInput.value.trim() !== trimmed) return;
+      hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+      updateResults();
+    });
   } catch (err) {
     if (generation !== searchGeneration) return;
     error = err instanceof Error ? err.message : "검색에 실패했습니다.";

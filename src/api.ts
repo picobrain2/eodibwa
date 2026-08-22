@@ -252,6 +252,7 @@ const externalIdCache = new Map<string, string>();
 const omdbVoteCache = new Map<string, { votes: number; expires: number }>();
 const LOCALIZE_BATCH = 6;
 const ENRICH_BATCH = 6;
+const ENRICH_LIMIT = 16;
 const OMDB_VOTE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function popularityVotes(hit: SearchHit): number {
@@ -309,16 +310,38 @@ async function fetchImdbVoteCount(imdbID: string): Promise<number | undefined> {
   }
 }
 
+function sortSearchHits(hits: SearchHit[], query: string): SearchHit[] {
+  return [...hits].sort((a, b) => compareSearchHits(a, b, query));
+}
+
 async function enrichSearchHitsWithImdb(hits: SearchHit[]): Promise<SearchHit[]> {
   if (!settings.hasOMDb || !hits.length) return hits;
 
   return mapInBatches(hits, ENRICH_BATCH, async (hit) => {
+    if (hit.imdbVoteCount !== undefined) return hit;
+
     const imdbID = hit.imdbID ?? await fetchImdbId(hit.kind, hit.tmdbID);
     if (!imdbID) return hit;
+
+    const cached = omdbVoteCache.get(imdbID);
+    if (cached && cached.expires > Date.now()) {
+      return { ...hit, imdbID, imdbVoteCount: cached.votes };
+    }
+
     const imdbVoteCount = await fetchImdbVoteCount(imdbID);
     if (imdbVoteCount === undefined) return { ...hit, imdbID };
     return { ...hit, imdbID, imdbVoteCount };
   });
+}
+
+export async function refineSearchWithImdb(hits: SearchHit[], query: string): Promise<SearchHit[]> {
+  if (!settings.hasOMDb || !hits.length) return hits;
+
+  const preliminary = sortSearchHits(hits, query);
+  const enrichedTop = await enrichSearchHitsWithImdb(preliminary.slice(0, ENRICH_LIMIT));
+  const enrichedByID = new Map(enrichedTop.map((hit) => [hit.id, hit]));
+  const merged = preliminary.map((hit) => enrichedByID.get(hit.id) ?? hit);
+  return sortSearchHits(merged, query);
 }
 
 async function fetchLocalizedTitles(kind: MediaKind, id: number): Promise<LocalizedTitles> {
@@ -385,9 +408,8 @@ export async function searchTitles(query: string): Promise<SearchHit[]> {
   }
 
   hits = mergeHits(hits, personHits);
-  hits = await enrichSearchHitsWithImdb(hits);
 
-  return hits.sort((a, b) => compareSearchHits(a, b, query));
+  return sortSearchHits(hits, query);
 }
 
 interface ProviderDTO {
