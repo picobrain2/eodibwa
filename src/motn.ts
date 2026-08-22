@@ -140,7 +140,8 @@ async function fetchFreshRegionCache(region: string): Promise<MotnRegionCache> {
       const payload = await motn<unknown>("/shows/top", {
         country,
         service,
-        output_language: "ko",
+        // MOTN supports en, es, fr, tr, de only — not ko
+        output_language: "en",
       });
       tops[service] = normalizeShows(payload);
     }),

@@ -11,19 +11,22 @@ const DEFAULT_MOTN = import.meta.env.VITE_MOTN_KEY ?? "";
 
 export const settings = {
   get tmdb(): string {
-    return localStorage.getItem(KEYS.tmdb) ?? DEFAULT_TMDB;
+    const stored = localStorage.getItem(KEYS.tmdb);
+    return stored?.trim() ? stored.trim() : DEFAULT_TMDB;
   },
   set tmdb(value: string) {
     localStorage.setItem(KEYS.tmdb, value.trim());
   },
   get omdb(): string {
-    return localStorage.getItem(KEYS.omdb) ?? DEFAULT_OMDB;
+    const stored = localStorage.getItem(KEYS.omdb);
+    return stored?.trim() ? stored.trim() : DEFAULT_OMDB;
   },
   set omdb(value: string) {
     localStorage.setItem(KEYS.omdb, value.trim());
   },
   get motn(): string {
-    return localStorage.getItem(KEYS.motn) ?? DEFAULT_MOTN;
+    const stored = localStorage.getItem(KEYS.motn);
+    return stored?.trim() ? stored.trim() : DEFAULT_MOTN;
   },
   set motn(value: string) {
     localStorage.setItem(KEYS.motn, value.trim());
