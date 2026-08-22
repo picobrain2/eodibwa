@@ -164,6 +164,13 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
   return hits.sort((a, b) => b.voteCount - a.voteCount);
 }
 
+function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
+  const left = searchHitScore(a, query);
+  const right = searchHitScore(b, query);
+  if (left !== right) return right - left;
+  return popularityVotes(b) - popularityVotes(a);
+}
+
 function mergeHits(primary: SearchHit[], extra: SearchHit[]): SearchHit[] {
   const seen = new Set(primary.map((hit) => hit.id));
   const merged = [...primary];
@@ -182,9 +189,9 @@ function searchHitScore(hit: SearchHit, query: string): number {
     : hit.matchedPerson
       ? relevance([hit.matchedPerson], query)
       : 0;
-  if (titleScore >= 80) return titleScore * 1000 + hit.voteCount;
-  if (personScore >= PERSON_MATCH_MIN) return personScore * 100 + titleScore + hit.voteCount / 1000;
-  return titleScore * 10 + hit.voteCount / 1000;
+  if (titleScore >= 80) return titleScore * 1000 + popularityVotes(hit);
+  if (personScore >= PERSON_MATCH_MIN) return personScore * 100 + titleScore + popularityVotes(hit) / 1000;
+  return titleScore * 10 + popularityVotes(hit) / 1000;
 }
 
 async function searchOnce(query: string): Promise<SearchHit[]> {
@@ -241,7 +248,78 @@ interface LocalizedTitles {
 }
 
 const localizedTitleCache = new Map<string, LocalizedTitles>();
+const externalIdCache = new Map<string, string>();
+const omdbVoteCache = new Map<string, { votes: number; expires: number }>();
 const LOCALIZE_BATCH = 6;
+const ENRICH_BATCH = 6;
+const OMDB_VOTE_TTL_MS = 24 * 60 * 60 * 1000;
+
+function popularityVotes(hit: SearchHit): number {
+  return hit.imdbVoteCount ?? hit.voteCount;
+}
+
+async function mapInBatches<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = [];
+  for (let index = 0; index < items.length; index += size) {
+    out.push(...await Promise.all(items.slice(index, index + size).map(fn)));
+  }
+  return out;
+}
+
+async function fetchImdbId(kind: MediaKind, tmdbID: number): Promise<string | undefined> {
+  const key = `${kind}-${tmdbID}`;
+  if (externalIdCache.has(key)) {
+    const cached = externalIdCache.get(key);
+    return cached ? cached : undefined;
+  }
+  try {
+    const data = await tmdb<{ imdb_id?: string | null }>(`/${kind}/${tmdbID}/external_ids`);
+    const imdbID = data.imdb_id?.trim() ?? "";
+    externalIdCache.set(key, imdbID);
+    return imdbID || undefined;
+  } catch {
+    externalIdCache.set(key, "");
+    return undefined;
+  }
+}
+
+function parseImdbVotes(raw?: string): number | undefined {
+  if (!raw) return undefined;
+  const votes = Number.parseInt(raw.replace(/,/g, ""), 10);
+  return Number.isFinite(votes) ? votes : undefined;
+}
+
+async function fetchImdbVoteCount(imdbID: string): Promise<number | undefined> {
+  if (!settings.hasOMDb) return undefined;
+  const cached = omdbVoteCache.get(imdbID);
+  if (cached && cached.expires > Date.now()) return cached.votes;
+
+  try {
+    const url = new URL("https://www.omdbapi.com/");
+    url.searchParams.set("i", imdbID);
+    url.searchParams.set("apikey", settings.omdb);
+    const data = await (await fetch(url)).json() as { Response?: string; imdbVotes?: string };
+    const votes = data.Response === "True" ? parseImdbVotes(data.imdbVotes) : undefined;
+    if (votes !== undefined) {
+      omdbVoteCache.set(imdbID, { votes, expires: Date.now() + OMDB_VOTE_TTL_MS });
+    }
+    return votes;
+  } catch {
+    return undefined;
+  }
+}
+
+async function enrichSearchHitsWithImdb(hits: SearchHit[]): Promise<SearchHit[]> {
+  if (!settings.hasOMDb || !hits.length) return hits;
+
+  return mapInBatches(hits, ENRICH_BATCH, async (hit) => {
+    const imdbID = hit.imdbID ?? await fetchImdbId(hit.kind, hit.tmdbID);
+    if (!imdbID) return hit;
+    const imdbVoteCount = await fetchImdbVoteCount(imdbID);
+    if (imdbVoteCount === undefined) return { ...hit, imdbID };
+    return { ...hit, imdbID, imdbVoteCount };
+  });
+}
 
 async function fetchLocalizedTitles(kind: MediaKind, id: number): Promise<LocalizedTitles> {
   const cacheKey = `${kind}-${id}`;
@@ -307,13 +385,9 @@ export async function searchTitles(query: string): Promise<SearchHit[]> {
   }
 
   hits = mergeHits(hits, personHits);
+  hits = await enrichSearchHitsWithImdb(hits);
 
-  return hits.sort((a, b) => {
-    const left = searchHitScore(a, query);
-    const right = searchHitScore(b, query);
-    if (left !== right) return right - left;
-    return b.voteCount - a.voteCount;
-  });
+  return hits.sort((a, b) => compareSearchHits(a, b, query));
 }
 
 interface ProviderDTO {

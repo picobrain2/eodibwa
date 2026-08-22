@@ -14,6 +14,8 @@ export interface SearchHit {
   posterPath?: string;
   voteAverage: number;
   voteCount: number;
+  imdbID?: string;
+  imdbVoteCount?: number;
   providerLogo?: string;
   providerName?: string;
   providerID?: number;
