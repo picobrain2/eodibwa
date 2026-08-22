@@ -1,4 +1,4 @@
-import { fetchDetail, pingTMDB, providerLink, searchTitles } from "./api";
+import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles } from "./api";
 import { settings } from "./settings";
 import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
 
@@ -157,6 +157,11 @@ function detailHTML(): string {
       </div>
       ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 API 키 설정에서 OMDb 키를 넣으면 표시됩니다.</p>` : ""}
     </section>
+    ${loadingReviews && !d.popularReviews.length ? `
+    <section class="section">
+      <h2>인기 평가</h2>
+      <div class="loading">평가 불러오는 중…</div>
+    </section>` : ""}
     ${d.popularReviews.length ? `
     <section class="section">
       <h2>인기 평가</h2>
@@ -176,7 +181,7 @@ function detailHTML(): string {
           </article>
         `).join("")}
       </div>
-      <p class="hint">Reddit 추천수 · TMDB 사용자 평점 리뷰를 함께 보여 줍니다.</p>
+      <p class="hint">TMDB 사용자 평점 리뷰를 보여 줍니다.</p>
     </section>` : ""}
     <section class="section">
       <h2>어디서 볼 수 있나요
@@ -300,21 +305,35 @@ async function runSearch(raw: string): Promise<void> {
 }
 
 let detailGeneration = 0;
+let loadingReviews = false;
 
 async function loadSelected(): Promise<void> {
   if (!selected) return;
   const generation = ++detailGeneration;
   loadingDetail = true;
+  loadingReviews = false;
   updateDetail();
   try {
     const next = await fetchDetail(selected.kind, selected.tmdbID);
     if (generation !== detailGeneration) return;
     detail = next;
+    loadingDetail = false;
+    updateDetail();
+
+    loadingReviews = true;
+    updateDetail();
+    const reviews = await fetchPopularReviews(selected.kind, selected.tmdbID, next.titleKO, next.titleEN);
+    if (generation !== detailGeneration || !detail) return;
+    detail.popularReviews = reviews;
   } catch (err) {
     if (generation !== detailGeneration) return;
     error = err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.";
+    loadingDetail = false;
+    updateDetail();
+    return;
   } finally {
     if (generation !== detailGeneration) return;
+    loadingReviews = false;
     loadingDetail = false;
     updateDetail();
   }

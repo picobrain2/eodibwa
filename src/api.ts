@@ -252,8 +252,11 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
     enrichTVMaze(detail),
     enrichWikipedia(detail),
   ]);
-  detail.popularReviews = await fetchPopularReviews(kind, id, detail.titleKO, detail.titleEN);
   return detail;
+}
+
+export async function fetchPopularReviews(kind: MediaKind, id: number, _titleKO = "", _titleEN = ""): Promise<PopularReview[]> {
+  return fetchPopularReviewsInternal(kind, id);
 }
 
 interface ReviewItemDTO {
@@ -271,22 +274,6 @@ function cleanReview(text: string): string {
 function truncateReview(text: string, limit: number): string {
   if (text.length <= limit) return text;
   return `${text.slice(0, limit).trim()}…`;
-}
-
-function mergeReviews(reddit: PopularReview[], tmdb: PopularReview[]): PopularReview[] {
-  const seen = new Set<string>();
-  const merged: PopularReview[] = [];
-  const add = (items: PopularReview[]) => {
-    for (const item of items) {
-      const key = item.content.slice(0, 120).replace(/\s+/g, "");
-      if (key.length < 20 || seen.has(key)) continue;
-      seen.add(key);
-      merged.push(item);
-    }
-  };
-  add([...reddit].sort((a, b) => (b.likes ?? 0) - (a.likes ?? 0)).slice(0, 3));
-  add([...tmdb].sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0)).slice(0, 3));
-  return merged.slice(0, 5);
 }
 
 async function fetchTMDBReviews(kind: MediaKind, id: number): Promise<PopularReview[]> {
@@ -314,59 +301,9 @@ async function fetchTMDBReviews(kind: MediaKind, id: number): Promise<PopularRev
   return reviews.sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0));
 }
 
-async function fetchRedditReviews(titleKO: string, titleEN: string, kind: MediaKind): Promise<PopularReview[]> {
-  const queries = [titleEN, titleKO].map((item) => item.trim()).filter(Boolean);
-  const subs = [kind === "movie" ? "movies" : "television"];
-  if (/[\uAC00-\uD7A3]/.test(`${titleKO}${titleEN}`)) {
-    subs.push("korea", "KoreanTV", "hanguk");
-  }
-  const results: PopularReview[] = [];
-  for (const query of queries) {
-    for (const sub of subs) {
-      try {
-        const url = new URL(`https://www.reddit.com/r/${sub}/search.json`);
-        url.searchParams.set("q", query);
-        url.searchParams.set("restrict_sr", "1");
-        url.searchParams.set("sort", "top");
-        url.searchParams.set("limit", "8");
-        url.searchParams.set("t", "all");
-        const response = await fetch(url, { headers: { Accept: "application/json" } });
-        if (!response.ok) continue;
-        const data = await response.json() as {
-          data?: { children?: { data?: { id?: string; title?: string; selftext?: string; author?: string; score?: number; permalink?: string } }[] };
-        };
-        for (const child of data.data?.children ?? []) {
-          const post = child.data;
-          if (!post) continue;
-          const body = cleanReview(post.selftext ?? "");
-          const title = cleanReview(post.title ?? "");
-          const content = body.length >= 40 ? body : (title.length >= 20 ? title : "");
-          if (content.length < 40 || (post.score ?? 0) < 5) continue;
-          results.push({
-            id: `reddit-${post.id ?? crypto.randomUUID()}`,
-            author: post.author ?? "reddit",
-            content: truncateReview(content, 320),
-            likes: post.score,
-            source: "Reddit",
-            url: post.permalink ? `https://www.reddit.com${post.permalink}` : undefined,
-          });
-        }
-      } catch {
-        // Reddit is often blocked by CORS in browsers
-      }
-    }
-  }
-  return results
-    .sort((a, b) => (b.likes ?? 0) - (a.likes ?? 0))
-    .filter((item, index, list) => list.findIndex((row) => row.id === item.id) === index);
-}
-
-async function fetchPopularReviews(kind: MediaKind, id: number, titleKO = "", titleEN = ""): Promise<PopularReview[]> {
-  const [reddit, tmdbReviews] = await Promise.all([
-    fetchRedditReviews(titleKO, titleEN, kind),
-    fetchTMDBReviews(kind, id),
-  ]);
-  return mergeReviews(reddit, tmdbReviews);
+async function fetchPopularReviewsInternal(kind: MediaKind, id: number): Promise<PopularReview[]> {
+  const reviews = await fetchTMDBReviews(kind, id);
+  return reviews.slice(0, 5);
 }
 
 async function enrichOMDb(detail: TitleDetail): Promise<void> {
