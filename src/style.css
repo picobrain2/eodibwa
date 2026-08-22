@@ -38,7 +38,19 @@ body { background: var(--bg); color: var(--text); }
 }
 
 .search-box { padding: 16px; display: grid; gap: 10px; }
-.search-box h1 { margin: 0; font-size: 22px; }
+.app-title {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 22px;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: left;
+}
+.app-title:hover { color: var(--gold); }
 .search-box input, .search-box select, .modal input {
   width: 100%;
   border: 1px solid var(--line);
@@ -264,6 +276,14 @@ body { background: var(--bg); color: var(--text); }
 .recommend-page-head h2 {
   margin: 0;
   font-size: 18px;
+  flex: 1;
+  min-width: 0;
+}
+
+.go-home {
+  color: var(--gold);
+  font-weight: 700;
+  flex-shrink: 0;
 }
 
 .recommend-page-body {
@@ -297,6 +317,8 @@ body { background: var(--bg); color: var(--text); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .detail-page-body {

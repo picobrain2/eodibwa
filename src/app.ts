@@ -116,6 +116,48 @@ function closeDetailPage(useHistory = true): void {
   updateDetail();
 }
 
+function goToMainHome(): void {
+  window.clearTimeout(debounce);
+  query = "";
+  hits = [];
+  selected = undefined;
+  detail = undefined;
+  detailError = "";
+  loadingDetail = false;
+  loadingReviews = false;
+  searching = false;
+  error = "";
+  searchGeneration += 1;
+  detailGeneration += 1;
+
+  if (showSettings) {
+    showSettings = false;
+    updateSettings();
+  }
+
+  if (isMobileLayout()) {
+    showDetailPage = false;
+    showRecommendPage = false;
+    recommendHost.innerHTML = "";
+    detailHost.innerHTML = "";
+    suppressHistory = true;
+    history.replaceState({ mobile: "main" as MobileView }, "");
+    suppressHistory = false;
+    updateRecommendPage();
+  }
+
+  if (searchInput) searchInput.value = "";
+  updateResults();
+  updateDetail();
+  searchInput?.focus();
+}
+
+function bindHomeButtons(root: ParentNode = app): void {
+  root.querySelectorAll<HTMLButtonElement>(".go-home").forEach((button) => {
+    button.onclick = () => goToMainHome();
+  });
+}
+
 function activeGenreName(): string {
   return RECOMMEND_GENRES.find((genre) => genre.id === selectedGenreID)?.name ?? "전체";
 }
@@ -198,7 +240,7 @@ function mount(): void {
     <div class="layout">
       <aside class="sidebar">
         <div class="search-box">
-          <h1>어디봐</h1>
+          <button type="button" class="app-title go-home" id="go-home">어디봐</button>
           <input id="q" placeholder="드라마 · 영화 · 예능 (한글/영어)" />
           <div class="filters">
             ${(["all", "movie", "tv"] as MediaFilter[]).map((item) => `
@@ -234,6 +276,8 @@ function mount(): void {
   searchInput.addEventListener("keydown", (event) => {
     if (event.key === "Enter") void runSearch(searchInput.value);
   });
+
+  bindHomeButtons();
 
   app.querySelector("#open-settings")?.addEventListener("click", () => {
     showSettings = true;
@@ -345,6 +389,7 @@ function updateRecommendPage(): void {
     <div class="recommend-page">
       <header class="recommend-page-head">
         <button class="ghost" type="button" id="close-recommend">← 돌아가기</button>
+        <button class="ghost go-home" type="button">어디봐</button>
         <h2>오늘 뭐 볼까</h2>
       </header>
       <div class="recommend-page-body">${recommendHTML({ hideTitle: true })}</div>
@@ -353,6 +398,7 @@ function updateRecommendPage(): void {
   recommendHost.querySelector("#close-recommend")?.addEventListener("click", () => {
     closeRecommendPage();
   });
+  bindHomeButtons(recommendHost);
   const body = recommendHost.querySelector(".recommend-page-body");
   if (!body) return;
   bindHits(body);
@@ -403,6 +449,7 @@ function updateDetailPage(): void {
     <div class="detail-page">
       <header class="detail-page-head">
         <button class="ghost" type="button" id="close-detail">← 돌아가기</button>
+        <button class="ghost go-home" type="button">어디봐</button>
         <h2>${escapeHTML(heading)}</h2>
       </header>
       <div class="detail-page-body">${detailHTML({ forOverlay: true })}</div>
@@ -411,6 +458,7 @@ function updateDetailPage(): void {
   detailHost.querySelector("#close-detail")?.addEventListener("click", () => {
     closeDetailPage();
   });
+  bindHomeButtons(detailHost);
   const body = detailHost.querySelector(".detail-page-body");
   if (body) bindDetailControls(body);
 }
