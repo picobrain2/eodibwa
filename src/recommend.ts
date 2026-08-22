@@ -300,15 +300,14 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
   const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
 
   const needsTmdb = ids.some((id) => !settings.hasMOTN || !MOTN_TMDB_PROVIDER[id]);
-  const motnPrefetch = settings.hasMOTN ? prefetchMotnRegion(region) : Promise.resolve();
-  const tmdbChart = needsTmdb ? buildTrendingChart(region) : Promise.resolve([] as ChartEntry[]);
-  const [entries] = await Promise.all([tmdbChart, motnPrefetch]);
+  const motnReady = settings.hasMOTN ? await prefetchMotnRegion(region) : false;
+  const entries = needsTmdb ? await buildTrendingChart(region) : [];
 
   const rows = await Promise.all(
     ids.map(async (id) => {
       const meta = catalog.get(id) ?? { name: `Provider ${id}` };
       const provider = { id, name: meta.name, logo: meta.logo };
-      const motnService = settings.hasMOTN ? MOTN_TMDB_PROVIDER[id] : undefined;
+      const motnService = motnReady ? MOTN_TMDB_PROVIDER[id] : undefined;
 
       if (motnService) {
         try {

@@ -27,6 +27,7 @@ let loadingProviderRecommend = false;
 let recommendLoaded = false;
 let nowPlayingIDs = new Set<number>();
 let providerRecommendGeneration = 0;
+let recommendError = "";
 
 function allRecommendHits(): SearchHit[] {
   return recommendProviders.flatMap((group) => group.hits);
@@ -172,8 +173,10 @@ function recommendHTML(): string {
   const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
   const motnHint = settings.hasMOTN
     ? (motnCacheFresh(settings.region)
-      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(6시간 캐시), TVING·Wavve·Watcha는 TMDB 급상승입니다."
-      : "Netflix·Disney+ 등 공식 Top 10을 불러오는 중… (이후 6시간 캐시)")
+      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha는 TMDB 급상승입니다."
+      : (loadingRecommend || loadingProviderRecommend)
+        ? "Netflix·Disney+ 공식 Top 10을 불러오는 중…"
+        : "Netflix·Disney+ Top 10을 불러오지 못해 TMDB 급상승으로 표시합니다.")
     : "TVING·Wavve·Watcha는 TMDB 급상승, Netflix 등은 Movie of the Night 키 설정 시 공식 Top 10을 사용합니다.";
   return `
     <div class="recommend">
@@ -185,9 +188,10 @@ function recommendHTML(): string {
         `).join("")}
       </div>
       ${loadingProviderRecommend ? `<div class="loading inline">OTT별 순위 불러오는 중…</div>` : ""}
+      ${recommendError ? `<div class="empty inline">${escapeHTML(recommendError)}</div>` : ""}
       <p class="recommend-hint">${escapeHTML(motnHint)}</p>
       ${recommendProviders.map((group) => ottGroupHTML(group)).join("")}
-      ${!loadingProviderRecommend && !recommendProviders.length ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
+      ${!loadingProviderRecommend && !recommendProviders.length && !recommendError ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
       <h3 class="recommend-section">요즘 인기</h3>
       ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
     </div>`;
@@ -506,6 +510,7 @@ async function refreshNowPlaying(): Promise<void> {
 export async function loadRecommendations(): Promise<void> {
   if (!settings.hasTMDB || loadingRecommend || recommendLoaded) return;
   loadingRecommend = true;
+  recommendError = "";
   updateResults();
   try {
     const [data] = await Promise.all([
@@ -515,9 +520,13 @@ export async function loadRecommendations(): Promise<void> {
     recommendTrending = data.trending;
     recommendProviders = data.providers;
     recommendLoaded = true;
-  } catch {
+    if (!recommendProviders.length) {
+      recommendError = "OTT 추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.";
+    }
+  } catch (err) {
     recommendTrending = [];
     recommendProviders = [];
+    recommendError = err instanceof Error ? err.message : "OTT 추천을 불러오지 못했습니다.";
   } finally {
     loadingRecommend = false;
     updateResults();
@@ -528,14 +537,19 @@ async function reloadProviderRecommendations(): Promise<void> {
   if (!settings.hasTMDB) return;
   const generation = ++providerRecommendGeneration;
   loadingProviderRecommend = true;
+  recommendError = "";
   updateResults();
   try {
     const providers = await fetchProviderRecommendations(settings.region, selectedGenreID);
     if (generation !== providerRecommendGeneration) return;
     recommendProviders = providers;
-  } catch {
+    if (!providers.length) {
+      recommendError = "이 장르에 해당하는 OTT 작품을 찾지 못했습니다.";
+    }
+  } catch (err) {
     if (generation !== providerRecommendGeneration) return;
     recommendProviders = [];
+    recommendError = err instanceof Error ? err.message : "OTT 추천을 불러오지 못했습니다.";
   } finally {
     if (generation !== providerRecommendGeneration) return;
     loadingProviderRecommend = false;

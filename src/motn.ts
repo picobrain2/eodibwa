@@ -57,6 +57,21 @@ let memoryCache: MotnRegionCache | undefined;
 let inflight: Promise<MotnRegionCache> | undefined;
 let inflightRegion = "";
 
+function normalizeShows(payload: unknown): MOTNShow[] {
+  if (Array.isArray(payload)) return payload as MOTNShow[];
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (Array.isArray(record.shows)) return record.shows as MOTNShow[];
+    if (Array.isArray(record.results)) return record.results as MOTNShow[];
+  }
+  return [];
+}
+
+function readTmdbId(show: MOTNShow & Record<string, unknown>): string | undefined {
+  const raw = show.tmdbId ?? show.tmdb_id ?? show.tmdbID;
+  return typeof raw === "string" && raw.includes("/") ? raw : undefined;
+}
+
 async function motn<T>(path: string, query: Record<string, string> = {}): Promise<T> {
   const key = settings.motn;
   if (!key) throw new Error("Movie of the Night API 키가 필요합니다.");
@@ -99,6 +114,10 @@ function isFresh(cache: MotnRegionCache, region: string): boolean {
   return cache.region === region && Date.now() - cache.fetchedAt < CACHE_TTL_MS;
 }
 
+function totalShows(cache: MotnRegionCache): number {
+  return Object.values(cache.tops).reduce((sum, list) => sum + list.length, 0);
+}
+
 export function invalidateMotnCache(): void {
   memoryCache = undefined;
   inflight = undefined;
@@ -106,15 +125,9 @@ export function invalidateMotnCache(): void {
   localStorage.removeItem(STORAGE_KEY);
 }
 
-export function motnCacheAge(region: string): number | undefined {
-  const cache = memoryCache ?? readPersisted();
-  if (!cache || cache.region !== region) return undefined;
-  return Date.now() - cache.fetchedAt;
-}
-
 export function motnCacheFresh(region: string): boolean {
   const cache = memoryCache ?? readPersisted();
-  return Boolean(cache && isFresh(cache, region));
+  return Boolean(cache && isFresh(cache, region) && totalShows(cache) > 0);
 }
 
 async function fetchFreshRegionCache(region: string): Promise<MotnRegionCache> {
@@ -122,30 +135,40 @@ async function fetchFreshRegionCache(region: string): Promise<MotnRegionCache> {
   const services = [...new Set(Object.values(MOTN_TMDB_PROVIDER))];
   const tops: Record<string, MOTNShow[]> = {};
 
-  await Promise.all(services.map(async (service) => {
-    const top = await motn<MOTNShow[]>("/shows/top", {
-      country,
-      service,
-      output_language: "ko",
-    });
-    tops[service] = Array.isArray(top) ? top : [];
-  }));
+  const results = await Promise.allSettled(
+    services.map(async (service) => {
+      const payload = await motn<unknown>("/shows/top", {
+        country,
+        service,
+        output_language: "ko",
+      });
+      tops[service] = normalizeShows(payload);
+    }),
+  );
 
-  const cache: MotnRegionCache = {
-    region,
-    fetchedAt: Date.now(),
-    tops,
-  };
+  const failed = results.filter((result) => result.status === "rejected").length;
+  const count = Object.values(tops).reduce((sum, list) => sum + list.length, 0);
+  if (count === 0) {
+    const reason = results.find((result) => result.status === "rejected") as PromiseRejectedResult | undefined;
+    throw reason?.reason ?? new Error("Movie of the Night에서 Top 10을 가져오지 못했습니다.");
+  }
+  if (failed > 0) {
+    console.warn(`MOTN: ${failed}/${services.length} OTT Top 10 요청 실패`);
+  }
+
+  const cache: MotnRegionCache = { region, fetchedAt: Date.now(), tops };
   memoryCache = cache;
   writePersisted(cache);
   return cache;
 }
 
 async function ensureRegionCache(region: string): Promise<MotnRegionCache> {
-  if (memoryCache && isFresh(memoryCache, region)) return memoryCache;
+  if (memoryCache && isFresh(memoryCache, region) && totalShows(memoryCache) > 0) {
+    return memoryCache;
+  }
 
   const persisted = readPersisted();
-  if (persisted && isFresh(persisted, region)) {
+  if (persisted && isFresh(persisted, region) && totalShows(persisted) > 0) {
     memoryCache = persisted;
     return persisted;
   }
@@ -167,12 +190,13 @@ function posterFrom(show: MOTNShow): string | undefined {
 }
 
 function parseTmdb(show: MOTNShow): { kind: MediaKind; id: number } | undefined {
-  if (!show.tmdbId) return undefined;
-  const [raw, idText] = show.tmdbId.split("/");
+  const raw = readTmdbId(show as MOTNShow & Record<string, unknown>);
+  if (!raw) return undefined;
+  const [type, idText] = raw.split("/");
   const id = Number(idText);
   if (!id) return undefined;
-  if (raw === "movie") return { kind: "movie", id };
-  if (raw === "tv" || raw === "series") return { kind: "tv", id };
+  if (type === "movie") return { kind: "movie", id };
+  if (type === "tv" || type === "series") return { kind: "tv", id };
   return undefined;
 }
 
@@ -222,7 +246,12 @@ export async function fetchMotnProviderHits(
     .filter((hit): hit is SearchHit => Boolean(hit));
 }
 
-export async function prefetchMotnRegion(region: string): Promise<void> {
-  if (!settings.hasMOTN) return;
-  await ensureRegionCache(region);
+export async function prefetchMotnRegion(region: string): Promise<boolean> {
+  if (!settings.hasMOTN) return false;
+  try {
+    await ensureRegionCache(region);
+    return true;
+  } catch {
+    return false;
+  }
 }
