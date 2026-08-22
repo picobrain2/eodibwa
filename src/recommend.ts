@@ -50,6 +50,40 @@ export function regionProviderIDs(region: string): number[] {
 /** KR local OTTs — use TMDB discover + watch provider (not network IDs). */
 const TMDB_DISCOVER_PROVIDERS = new Set([1883, 356, 97, 1881]);
 
+/** Lower = preferred owner when a title is on multiple OTTs (global platforms win over aggregators). */
+const PROVIDER_PRIORITY: Record<number, number> = {
+  8: 1,
+  337: 2,
+  119: 3,
+  350: 4,
+  384: 5,
+  531: 6,
+  84: 7,
+  39: 8,
+  1883: 50,
+  356: 51,
+  97: 52,
+  1881: 53,
+};
+
+function providerPriority(id: number): number {
+  return PROVIDER_PRIORITY[id] ?? 999;
+}
+
+function pickExclusiveProvider(providerIDs: number[], tracked: Set<number>): number | undefined {
+  let best: number | undefined;
+  let bestPriority = Infinity;
+  for (const id of providerIDs) {
+    if (!tracked.has(id)) continue;
+    const priority = providerPriority(id);
+    if (priority < bestPriority) {
+      bestPriority = priority;
+      best = id;
+    }
+  }
+  return best;
+}
+
 const CATALOG_TTL_MS = 60 * 60 * 1000;
 const CHART_TTL_MS = 30 * 60 * 1000;
 const CHART_SIZE = 36;
@@ -453,6 +487,43 @@ async function fetchProviderPopularHits(
   return result;
 }
 
+async function dedupeExclusiveProviders(
+  providers: RecommendProvider[],
+  region: string,
+  entries: ChartEntry[],
+): Promise<RecommendProvider[]> {
+  const tracked = new Set(PROVIDER_IDS[region] ?? PROVIDER_IDS.KR);
+  const entryByHitId = new Map(entries.map((entry) => [entry.hit.id, entry]));
+  const providerCache = new Map<string, number[]>();
+
+  const uniqueHits = new Map<string, SearchHit>();
+  for (const group of providers) {
+    for (const hit of group.hits) uniqueHits.set(hit.id, hit);
+  }
+
+  await mapInBatches([...uniqueHits.values()], BATCH_SIZE, async (hit) => {
+    const fromChart = entryByHitId.get(hit.id);
+    if (fromChart) {
+      providerCache.set(hit.id, [...fromChart.providerIDs]);
+      return;
+    }
+    providerCache.set(hit.id, await fetchProviderIDs(hit.kind, hit.tmdbID, region));
+  });
+
+  const owner = new Map<string, number>();
+  for (const hitId of uniqueHits.keys()) {
+    const winner = pickExclusiveProvider(providerCache.get(hitId) ?? [], tracked);
+    if (winner !== undefined) owner.set(hitId, winner);
+  }
+
+  return providers
+    .map((group) => ({
+      ...group,
+      hits: group.hits.filter((hit) => owner.get(hit.id) === group.id),
+    }))
+    .filter((group) => group.hits.length > 0);
+}
+
 export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
   const genre = genreID === 0 ? undefined : RECOMMEND_GENRES.find((item) => item.id === genreID);
   const catalog = await providerCatalog(region);
@@ -489,7 +560,8 @@ export async function fetchProviderRecommendations(region: string, genreID = 0):
     }),
   );
 
-  return rows.filter((row): row is RecommendProvider => row !== null);
+  const filtered = rows.filter((row): row is RecommendProvider => row !== null);
+  return dedupeExclusiveProviders(filtered, region, entries);
 }
 
 export async function loadRecommendations(region: string, genreID = 0): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {
