@@ -43,6 +43,10 @@ const PROVIDER_IDS: Record<string, number[]> = {
   GB: [8, 337, 350, 119, 39],
 };
 
+export function regionProviderIDs(region: string): number[] {
+  return PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
+}
+
 /** KR local OTTs — use TMDB discover + watch provider (not network IDs). */
 const TMDB_DISCOVER_PROVIDERS = new Set([1883, 356, 97, 1881]);
 

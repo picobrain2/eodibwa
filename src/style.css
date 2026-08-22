@@ -118,6 +118,33 @@ body { background: var(--bg); color: var(--text); }
   font-weight: 600;
 }
 .genre-tab.active { border-color: var(--gold); background: rgba(237,189,81,.12); color: var(--gold); }
+.ott-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 16px 12px;
+}
+.ott-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  border-radius: 999px;
+  padding: 5px 10px;
+  cursor: pointer;
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+.ott-tab img {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: cover;
+}
+.ott-tab.active { border-color: var(--gold); background: rgba(237,189,81,.12); color: var(--gold); }
+.ott-tab:disabled { opacity: 0.55; cursor: wait; }
 .ott-group { margin: 0 0 14px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
 .ott-group:last-of-type { border-bottom: none; }
 .ott-group-head {

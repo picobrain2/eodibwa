@@ -1,6 +1,6 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
 import { motnCacheFresh, pingMOTN } from "./motn";
-import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, type RecommendProvider } from "./recommend";
+import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
@@ -22,6 +22,7 @@ let searchGeneration = 0;
 let recommendTrending: SearchHit[] = [];
 let recommendProviders: RecommendProvider[] = [];
 let selectedGenreID = 0;
+let selectedProviderID = 8;
 let loadingRecommend = false;
 let loadingProviderRecommend = false;
 let recommendLoaded = false;
@@ -147,6 +148,8 @@ function goToMainHome(): void {
   }
 
   if (searchInput) searchInput.value = "";
+  selectedProviderID = 8;
+  ensureSelectedProvider();
   updateResults();
   updateDetail();
   searchInput?.focus();
@@ -162,13 +165,74 @@ function activeGenreName(): string {
   return RECOMMEND_GENRES.find((genre) => genre.id === selectedGenreID)?.name ?? "전체";
 }
 
-function ottGroupHTML(group: RecommendProvider): string {
+const PROVIDER_FALLBACK_NAMES: Record<number, string> = {
+  8: "Netflix",
+  1883: "TVING",
+  356: "Wavve",
+  97: "Watcha",
+  1881: "Coupang Play",
+  337: "Disney+",
+  119: "Prime Video",
+  350: "Apple TV+",
+  384: "HBO Max",
+  531: "Paramount+",
+  84: "U-NEXT",
+  39: "Now TV",
+};
+
+function ensureSelectedProvider(): void {
+  const ids = regionProviderIDs(settings.region);
+  if (!ids.includes(selectedProviderID)) {
+    selectedProviderID = ids.includes(8) ? 8 : ids[0];
+  }
+}
+
+function providerTabOptions(): { id: number; name: string; logo?: string }[] {
+  const ids = regionProviderIDs(settings.region);
+  const byID = new Map(recommendProviders.map((group) => [group.id, group]));
+  return ids.map((id) => {
+    const loaded = byID.get(id);
+    return {
+      id,
+      name: loaded?.name ?? PROVIDER_FALLBACK_NAMES[id] ?? `OTT ${id}`,
+      logo: loaded?.logo,
+    };
+  });
+}
+
+function activeProviderName(): string {
+  return providerTabOptions().find((item) => item.id === selectedProviderID)?.name ?? "OTT";
+}
+
+function visibleRecommendProviders(): RecommendProvider[] {
+  return recommendProviders.filter((group) => group.id === selectedProviderID);
+}
+
+function ottTabsHTML(): string {
+  return `
+    <div class="ott-tabs">
+      ${providerTabOptions().map((provider) => `
+        <button
+          class="ott-tab ${provider.id === selectedProviderID ? "active" : ""}"
+          type="button"
+          data-provider="${provider.id}"
+          ${loadingProviderRecommend && provider.id !== selectedProviderID ? "disabled" : ""}
+        >
+          ${provider.logo ? `<img alt="" src="${posterURL(provider.logo, "w92") ?? ""}" />` : ""}
+          <span>${escapeHTML(provider.name)}</span>
+        </button>
+      `).join("")}
+    </div>`;
+}
+
+function ottGroupHTML(group: RecommendProvider, hideHead = false): string {
   return `
     <div class="ott-group">
+      ${hideHead ? "" : `
       <div class="ott-group-head">
         ${group.logo ? `<img alt="" src="${posterURL(group.logo, "w92") ?? ""}" />` : ""}
         <span>${escapeHTML(group.name)}</span>
-      </div>
+      </div>`}
       ${group.hits.map((hit) => hitButton(hit, selected?.id)).join("")}
     </div>`;
 }
@@ -332,17 +396,18 @@ function recommendHTML(options?: { hideTitle?: boolean }): string {
   return `
     <div class="recommend">
       ${options?.hideTitle ? "" : `<h2 class="recommend-title">오늘 뭐 볼까</h2>`}
-      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} OTT별 급상승${genreLabel}</h3>
+      <h3 class="recommend-section">${escapeHTML(regionName(settings.region))} ${escapeHTML(activeProviderName())} 급상승${genreLabel}</h3>
       <div class="genre-tabs">
         ${RECOMMEND_GENRES.map((genre) => `
           <button class="genre-tab ${genre.id === selectedGenreID ? "active" : ""}" data-genre="${genre.id}" ${loadingProviderRecommend && genre.id !== selectedGenreID ? "disabled" : ""}>${escapeHTML(genre.name)}</button>
         `).join("")}
       </div>
-      ${loadingProviderRecommend ? `<div class="loading inline">OTT별 순위 불러오는 중…</div>` : ""}
+      ${ottTabsHTML()}
+      ${loadingProviderRecommend ? `<div class="loading inline">순위 불러오는 중…</div>` : ""}
       ${recommendError ? `<div class="empty inline">${escapeHTML(recommendError)}</div>` : ""}
       <p class="recommend-hint">${escapeHTML(motnHint)}</p>
-      ${recommendProviders.map((group) => ottGroupHTML(group)).join("")}
-      ${!loadingProviderRecommend && !recommendProviders.length && !recommendError ? `<div class="empty inline">이 장르에 해당하는 OTT 작품이 없습니다.</div>` : ""}
+      ${visibleRecommendProviders().map((group) => ottGroupHTML(group, true)).join("")}
+      ${!loadingProviderRecommend && !visibleRecommendProviders().length && !recommendError ? `<div class="empty inline">이 OTT·장르에 해당하는 작품이 없습니다.</div>` : ""}
       <h3 class="recommend-section">요즘 인기</h3>
       ${recommendTrending.map((hit) => hitButton(hit, selected?.id)).join("")}
     </div>`;
@@ -361,6 +426,24 @@ function bindRecommendControls(root: ParentNode): void {
   });
 }
 
+function bindProviderControls(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>("[data-provider]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const next = Number(button.dataset.provider);
+      if (next === selectedProviderID) return;
+      selectedProviderID = next;
+      updateResults();
+      updateRecommendPage();
+    });
+  });
+}
+
+function bindRecommendUI(root: ParentNode): void {
+  bindHits(root);
+  bindRecommendControls(root);
+  bindProviderControls(root);
+}
+
 function updateResults(): void {
   const list = filteredHits();
   const showRecommend = !query.trim() && !hits.length && !searching;
@@ -374,6 +457,7 @@ function updateResults(): void {
   `;
   bindHits(resultsEl);
   bindRecommendControls(resultsEl);
+  bindProviderControls(resultsEl);
   resultsEl.querySelector("#open-recommend")?.addEventListener("click", () => {
     openRecommendPage();
   });
@@ -401,8 +485,7 @@ function updateRecommendPage(): void {
   bindHomeButtons(recommendHost);
   const body = recommendHost.querySelector(".recommend-page-body");
   if (!body) return;
-  bindHits(body);
-  bindRecommendControls(body);
+  bindRecommendUI(body);
 }
 
 function bindDetailControls(root: ParentNode): void {
@@ -413,6 +496,8 @@ function bindDetailControls(root: ParentNode): void {
     invalidateNowPlaying();
     invalidateRecommendChart();
     recommendLoaded = false;
+    selectedProviderID = 8;
+    ensureSelectedProvider();
     void refreshNowPlaying().then(() => {
       if (detail?.kind === "movie") {
         detail.inTheaters = nowPlayingIDs.has(detail.tmdbID);
@@ -742,6 +827,7 @@ export async function loadRecommendations(): Promise<void> {
     recommendTrending = data.trending;
     recommendProviders = data.providers;
     recommendLoaded = true;
+    ensureSelectedProvider();
     if (!recommendProviders.length) {
       recommendError = "OTT 추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.";
     }
