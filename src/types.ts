@@ -73,6 +73,7 @@ export interface PopularReview {
   id: string;
   author: string;
   content: string;
+  translatedContent?: string;
   likes?: number;
   rating?: number;
   source: string;

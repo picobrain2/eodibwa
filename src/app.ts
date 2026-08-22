@@ -1,5 +1,6 @@
 import { fetchDetail, fetchPopularReviews, pingTMDB, providerLink, searchTitles, watchaSearchURL } from "./api";
 import { containsHangul } from "./lang";
+import { translateReviews } from "./translate";
 import { settings } from "./settings";
 import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
 
@@ -221,13 +222,14 @@ function reviewsSectionHTML(d: TitleDetail): string {
               ${review.likes != null ? `<span class="review-likes">추천 ${review.likes.toLocaleString()}</span>` : ""}
               ${review.rating != null ? `<span class="review-rating">★ ${review.rating.toFixed(0)}/10</span>` : ""}
             </div>
-            <p>${escapeHTML(review.content)}</p>
+            <p>${escapeHTML(review.translatedContent ?? review.content)}</p>
+            ${review.translatedContent ? `<details class="review-original"><summary>원문 보기</summary><p>${escapeHTML(review.content)}</p></details>` : ""}
             ${review.url ? `<a href="${review.url}" target="_blank" rel="noreferrer">원문 보기</a>` : ""}
           </article>
         `).join("")}
       </div>` : `<p class="hint">TMDB에 등록된 한국어 리뷰가 없습니다.</p>`}
       ${!hasKorean ? `<p class="hint"><a href="${watcha}" target="_blank" rel="noreferrer">왓챠피디아에서 한국어 평가 보기</a></p>` : ""}
-      <p class="hint">한글 리뷰를 우선 표시합니다.</p>
+      <p class="hint">한글 리뷰를 우선 표시하며, 영어 리뷰는 자동 번역합니다.</p>
     </section>`;
 }
 
@@ -338,7 +340,7 @@ async function loadSelected(): Promise<void> {
     updateDetail();
     const reviews = await fetchPopularReviews(hit.kind, hit.tmdbID, next.titleKO, next.titleEN);
     if (generation !== detailGeneration || !detail) return;
-    detail.popularReviews = reviews;
+    detail.popularReviews = await translateReviews(reviews);
   } catch (err) {
     if (generation !== detailGeneration) return;
     detailError = err instanceof Error ? err.message : "상세 정보를 불러오지 못했습니다.";
