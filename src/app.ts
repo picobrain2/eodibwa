@@ -286,7 +286,7 @@ function hitProvidersHTML(hit: SearchHit): string {
   if (!providers.length) return "";
   return `<span class="hit-providers">${providers.map((provider) => (
     provider.logo
-      ? `<img class="hit-provider" alt="" title="${escapeHTML(provider.name)}" src="${posterURL(provider.logo, "w45") ?? ""}" loading="lazy" decoding="async" />`
+      ? `<img class="hit-provider" alt="" title="${escapeHTML(provider.name)}" src="${posterURL(provider.logo, "w92") ?? ""}" loading="lazy" decoding="async" />`
       : `<span class="hit-provider-name">${escapeHTML(provider.name)}</span>`
   )).join("")}</span>`;
 }
