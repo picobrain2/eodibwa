@@ -20,10 +20,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VITE_TMDB_KEY: a4cce0ad04241c7620b2356ec6689590
-      VITE_OMDB_KEY: 9fa86b4e
-      VITE_MOTN_KEY: motn-key-v4-4VEcp7unHhHOE6MefSGekO5ehdHB0kQk
-      VITE_KMDB_KEY: 57K4OUI1R4UXT6W0C1FF
+      VITE_TMDB_KEY: ${{ secrets.VITE_TMDB_KEY }}
+      VITE_OMDB_KEY: ${{ secrets.VITE_OMDB_KEY }}
+      VITE_MOTN_KEY: ${{ secrets.VITE_MOTN_KEY }}
+      VITE_KMDB_KEY: ${{ secrets.VITE_KMDB_KEY }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
