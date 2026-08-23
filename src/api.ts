@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, compact, formatCreditRole, hangulSpaceVariants, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, compact, formatCreditRole, formatCrewRole, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -49,6 +49,7 @@ interface PersonSearchItem {
   name?: string;
   original_name?: string;
   popularity?: number;
+  known_for_department?: string;
   known_for?: CreditItem[];
 }
 
@@ -62,6 +63,9 @@ const PERSON_CREW_JOBS = new Set([
   "Director",
   "Creator",
   "Co-Director",
+  "Producer",
+  "Executive Producer",
+  "Co-Executive Producer",
   "Writer",
   "Screenplay",
   "Story",
@@ -74,6 +78,7 @@ const PERSON_QUERY_ALIASES: Record<string, string[]> = {
 };
 const STAGE_NAME_PERSON_IDS: Record<string, number> = {
   iu: 1299479,
+  나영석: 1697747,
 };
 const PERSON_FILMOGRAPHY_LIMIT = 24;
 const PERSON_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -173,6 +178,7 @@ interface PersonCandidate {
   id: number;
   names: string[];
   popularity: number;
+  department?: string;
   knownFor: CreditItem[];
 }
 
@@ -184,12 +190,28 @@ function addPersonName(row: PersonCandidate, name?: string): void {
 function addPersonNames(map: Map<number, PersonCandidate>, person: PersonSearchItem): void {
   const row = map.get(person.id) ?? { id: person.id, names: [], popularity: 0, knownFor: [] };
   row.popularity = Math.max(row.popularity, person.popularity ?? 0);
+  if (person.known_for_department) row.department = person.known_for_department;
   addPersonName(row, person.name);
   addPersonName(row, person.original_name);
   if ((person.known_for?.length ?? 0) > row.knownFor.length) {
     row.knownFor = person.known_for ?? [];
   }
   map.set(person.id, row);
+}
+
+function personDepartmentRank(department?: string): number {
+  if (department === "Directing") return 3;
+  if (department === "Production") return 2;
+  if (department === "Writing" || department === "Creator") return 2;
+  if (department === "Acting") return 0;
+  return 1;
+}
+
+function comparePersonCandidates(a: { person: PersonCandidate; score: number }, b: { person: PersonCandidate; score: number }): number {
+  if (b.score !== a.score) return b.score - a.score;
+  const deptDiff = personDepartmentRank(b.person.department) - personDepartmentRank(a.person.department);
+  if (deptDiff !== 0) return deptDiff;
+  return b.person.popularity - a.person.popularity;
 }
 
 async function enrichPersonCandidates(people: PersonCandidate[]): Promise<void> {
@@ -237,17 +259,23 @@ function finalizePersonHits(hits: SearchHit[]): SearchHit[] {
 
 async function fetchPersonFilmographyByID(personID: number): Promise<SearchHit[]> {
   const [detail, credits] = await Promise.all([
-    tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${personID}`, { language: "ko-KR" }),
+    tmdb<{ name?: string; also_known_as?: string[]; known_for_department?: string }>(`/person/${personID}`, { language: "ko-KR" }),
     tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${personID}/combined_credits`, { language: "ko-KR" }),
   ]);
-  const person: PersonCandidate = { id: personID, names: [], popularity: 100, knownFor: [] };
+  const person: PersonCandidate = {
+    id: personID,
+    names: [],
+    popularity: 100,
+    department: detail.known_for_department,
+    knownFor: [],
+  };
   addPersonName(person, detail.name);
   for (const aka of detail.also_known_as ?? []) addPersonName(person, aka);
   const personName = pickKorean(person.names) || person.names[0] || "";
   const extras = { matchedPerson: personName, matchedPersonNames: person.names };
   const hits: SearchHit[] = [];
   const seen = new Set<string>();
-  appendPersonCredits(hits, seen, { combined: credits, tv: {} }, extras);
+  appendPersonCredits(hits, seen, { combined: credits, tv: {} }, extras, isCrewFocusedDepartment(person.department));
   return finalizePersonHits(hits);
 }
 
@@ -260,29 +288,46 @@ async function fetchPersonCredits(personID: number): Promise<{ combined: { cast?
   }
 }
 
+function appendKnownForCredits(
+  hits: SearchHit[],
+  seen: Set<string>,
+  knownFor: CreditItem[],
+  extras: Pick<SearchHit, "matchedPerson" | "matchedPersonNames">,
+): void {
+  for (const item of knownFor) {
+    const hit = toHit(item, undefined, extras);
+    if (!hit || seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    hits.push(hit);
+  }
+}
+
 function appendPersonCredits(
   hits: SearchHit[],
   seen: Set<string>,
   credits: { combined: { cast?: CreditItem[]; crew?: CreditItem[] }; tv: { cast?: CreditItem[] } },
   extras: Pick<SearchHit, "matchedPerson" | "matchedPersonNames">,
+  crewOnly = false,
 ): void {
-  for (const item of credits.combined.cast ?? []) {
-    const hit = toHit(item, undefined, { ...extras, matchedRole: formatCreditRole(item.character) });
-    if (!hit || seen.has(hit.id)) continue;
-    seen.add(hit.id);
-    hits.push(hit);
-  }
+  if (!crewOnly) {
+    for (const item of credits.combined.cast ?? []) {
+      const hit = toHit(item, undefined, { ...extras, matchedRole: formatCreditRole(item.character) });
+      if (!hit || seen.has(hit.id)) continue;
+      seen.add(hit.id);
+      hits.push(hit);
+    }
 
-  for (const item of credits.tv.cast ?? []) {
-    const hit = toHit(item, undefined, { ...extras, matchedRole: formatCreditRole(item.character) });
-    if (!hit || seen.has(hit.id)) continue;
-    seen.add(hit.id);
-    hits.push(hit);
+    for (const item of credits.tv.cast ?? []) {
+      const hit = toHit(item, undefined, { ...extras, matchedRole: formatCreditRole(item.character) });
+      if (!hit || seen.has(hit.id)) continue;
+      seen.add(hit.id);
+      hits.push(hit);
+    }
   }
 
   for (const item of credits.combined.crew ?? []) {
     if (!item.job || !PERSON_CREW_JOBS.has(item.job)) continue;
-    const hit = toHit(item, undefined, { ...extras, matchedRole: "감독" });
+    const hit = toHit(item, undefined, { ...extras, matchedRole: formatCrewRole(item.job) });
     if (!hit || seen.has(hit.id)) continue;
     seen.add(hit.id);
     hits.push(hit);
@@ -302,20 +347,8 @@ async function pickMatchedPerson(query: string): Promise<PersonCandidate | undef
   const matched = [...peopleByID.values()]
     .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
     .filter((row) => row.score >= minScore)
-    .sort((a, b) => b.score - a.score || b.person.popularity - a.person.popularity)[0];
+    .sort(comparePersonCandidates)[0];
   return matched?.person;
-}
-
-function personHitsFromCredits(
-  person: PersonCandidate,
-  credits: { combined: { cast?: CreditItem[]; crew?: CreditItem[] }; tv: { cast?: CreditItem[] } },
-): SearchHit[] {
-  const personName = pickKorean(person.names) || person.names[0] || "";
-  const extras = { matchedPerson: personName, matchedPersonNames: person.names };
-  const hits: SearchHit[] = [];
-  const seen = new Set<string>();
-  appendPersonCredits(hits, seen, credits, extras);
-  return finalizePersonHits(hits);
 }
 
 export async function searchPersonKnownHits(query: string): Promise<SearchHit[]> {
@@ -333,7 +366,12 @@ export async function searchPersonKnownHits(query: string): Promise<SearchHit[]>
 
     const person = await pickMatchedPerson(query);
     if (!person || person.knownFor.length < PERSON_KNOWN_FOR_MIN) return [];
-    return personHitsFromCredits(person, { combined: { cast: person.knownFor }, tv: {} });
+    const personName = pickKorean(person.names) || person.names[0] || "";
+    const extras = { matchedPerson: personName, matchedPersonNames: person.names };
+    const hits: SearchHit[] = [];
+    const seen = new Set<string>();
+    appendKnownForCredits(hits, seen, person.knownFor, extras);
+    return finalizePersonHits(hits);
   } catch {
     return [];
   }
@@ -366,7 +404,7 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
     const matched = [...peopleByID.values()]
       .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
       .filter((row) => row.score >= minScore)
-      .sort((a, b) => b.score - a.score || b.person.popularity - a.person.popularity)
+      .sort(comparePersonCandidates)
       .slice(0, 1);
 
     if (!matched.length) return [];
@@ -380,13 +418,14 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
     const extras = { matchedPerson: personName, matchedPersonNames: person.names };
     const hits: SearchHit[] = [];
     const seen = new Set<string>();
+    const crewOnly = isCrewFocusedDepartment(person.department);
 
     if (person.knownFor.length) {
-      appendPersonCredits(hits, seen, { combined: { cast: person.knownFor }, tv: {} }, extras);
+      appendKnownForCredits(hits, seen, person.knownFor, extras);
     }
 
     if (hits.length < 8) {
-      appendPersonCredits(hits, seen, await fetchPersonCredits(person.id), extras);
+      appendPersonCredits(hits, seen, await fetchPersonCredits(person.id), extras, crewOnly);
     }
 
     const finalHits = finalizePersonHits(hits);

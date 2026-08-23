@@ -38,6 +38,30 @@ export function formatCreditRole(character?: string): string {
   return trimmed;
 }
 
+const CREW_ROLE_LABELS: Record<string, string> = {
+  Director: "연출",
+  Creator: "기획",
+  "Co-Director": "공동연출",
+  Producer: "프로듀서",
+  "Executive Producer": "프로듀서",
+  "Co-Executive Producer": "프로듀서",
+  Writer: "각본",
+  Screenplay: "각본",
+  Story: "스토리",
+  Teleplay: "각본",
+  Author: "원작",
+};
+
+export function formatCrewRole(job?: string): string {
+  const trimmed = job?.trim();
+  if (!trimmed) return "제작";
+  return CREW_ROLE_LABELS[trimmed] ?? trimmed;
+}
+
+export function isCrewFocusedDepartment(department?: string): boolean {
+  return department === "Directing" || department === "Production" || department === "Writing" || department === "Creator";
+}
+
 export function searchVariants(raw: string): string[] {
   const spaced = collapsed(raw);
   const squeezed = compact(spaced);
