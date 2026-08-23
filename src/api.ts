@@ -436,16 +436,17 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
   }
 }
 
+function filterShortLatinTitleHits(hits: SearchHit[], query: string): SearchHit[] {
+  if (compact(query).length > 4 || !isLatinOnly(query)) return hits;
+  return hits.filter((hit) => relevance([hit.titleKO, hit.titleEN], query) >= 80);
+}
+
 function filterTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
   const hasFilmography = hits.some((hit) => hit.matchedPerson);
-  if (!hasFilmography || compact(query).length > 4 || !isLatinOnly(query)) return hits;
+  const shortQuery = compact(query).length <= 4;
+  if (!hasFilmography || !shortQuery || !isLatinOnly(query)) return hits;
 
-  return hits.filter((hit) => {
-    if (hit.matchedPerson) return true;
-    const titleScore = relevance([hit.titleKO, hit.titleEN], query);
-    if (titleScore >= 80 && !isKoreanHit(hit)) return false;
-    return true;
-  });
+  return hits.filter((hit) => hit.matchedPerson);
 }
 
 function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
@@ -726,19 +727,30 @@ export async function localizeHitTitles(hits: SearchHit[]): Promise<SearchHit[]>
 }
 
 function titleSearchVariants(query: string): string[] {
+  const key = compact(query);
   const variants = searchVariants(query);
   const titleVariants = [...variants];
+  if (key.length <= 4 && isLatinOnly(query) && STAGE_NAME_PERSON_IDS[key]) {
+    return titleVariants;
+  }
   for (const extra of hangulSpaceVariants(query)) {
     if (!titleVariants.includes(extra)) titleVariants.push(extra);
   }
-  for (const alias of (PERSON_QUERY_ALIASES[compact(query)] ?? []).filter(containsHangul)) {
+  for (const alias of (PERSON_QUERY_ALIASES[key] ?? []).filter(containsHangul)) {
     if (!titleVariants.includes(alias)) titleVariants.push(alias);
   }
   return titleVariants;
 }
 
 export async function searchTitleHits(query: string): Promise<SearchHit[]> {
-  const hits = sortSearchHits(filterMisclassifiedPersonHits(await collect(titleSearchVariants(query)), query), query);
+  if (STAGE_NAME_PERSON_IDS[compact(query)]) return [];
+  const hits = sortSearchHits(
+    filterShortLatinTitleHits(
+      filterMisclassifiedPersonHits(await collect(titleSearchVariants(query)), query),
+      query,
+    ),
+    query,
+  );
   return localizeHitTitles(hits);
 }
 

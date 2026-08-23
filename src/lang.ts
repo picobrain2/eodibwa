@@ -105,7 +105,7 @@ export function relevance(titles: string[], query: string): number {
   const list = titles.map(compact).filter(Boolean);
   if (list.includes(q)) return 100;
   if (list.some((title) => title.startsWith(q) || q.startsWith(title))) return 80;
-  if (list.some((title) => title.includes(q) || q.includes(title))) return 60;
+  if (q.length >= 3 && list.some((title) => title.includes(q) || q.includes(title))) return 60;
   return 10;
 }
 
