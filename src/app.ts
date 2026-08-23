@@ -432,7 +432,7 @@ function mount(): void {
 
 function recommendHintText(): string {
   if (recommendFromBundle) {
-    return "OTT 추천 목록은 서버에서 미리 준비됩니다. 배포·자동 갱신 시 최신 데이터로 업데이트됩니다.";
+    return "Netflix·Disney+ MOTN Top 10과 TVING·Wavve 등 OTT 추천을 서버 JSON으로 제공합니다. 4시간마다 자동 갱신됩니다.";
   }
   if (settings.hasMOTN) {
     if (motnCacheFresh(settings.region)) {
@@ -488,6 +488,8 @@ function recommendHTML(options?: { hideTitle?: boolean }): string {
 
 function bindRecommendControls(root: ParentNode): void {
   root.querySelectorAll<HTMLButtonElement>("[data-genre]").forEach((button) => {
+    if (button.dataset.bound === "1") return;
+    button.dataset.bound = "1";
     button.addEventListener("click", () => {
       const next = Number(button.dataset.genre);
       if (next === selectedGenreID) return;
@@ -501,13 +503,15 @@ function bindRecommendControls(root: ParentNode): void {
 
 function bindProviderControls(root: ParentNode): void {
   root.querySelectorAll<HTMLButtonElement>("[data-provider]").forEach((button) => {
+    if (button.dataset.bound === "1") return;
+    button.dataset.bound = "1";
     button.addEventListener("click", () => {
       const next = Number(button.dataset.provider);
       if (next === selectedProviderID) return;
       selectedProviderID = next;
       updateResults();
       updateRecommendPage();
-      if (selectedGenreID !== 0) {
+      if (selectedGenreID !== 0 && !recommendFromBundle) {
         void reloadProviderRecommendations();
       }
     });

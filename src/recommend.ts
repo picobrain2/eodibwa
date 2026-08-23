@@ -847,9 +847,11 @@ export async function refreshProviderGroup(
 ): Promise<RecommendProvider[]> {
   const [entries, catalog] = await Promise.all([buildTrendingChart(region), providerCatalog(region)]);
   const group = await fetchOneProviderRecommendation(region, providerID, genreID, { entries, catalog });
-  const merged = current
-    .map((item) => (item.id === providerID ? group : item))
-    .filter((item): item is RecommendProvider => item !== null);
+  const merged = current.map((item) => {
+    if (item.id !== providerID) return item;
+    if (group) return group;
+    return { ...item, hits: [] };
+  });
   return dedupeExclusiveProviders(merged, region, entries);
 }
 
