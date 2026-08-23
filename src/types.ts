@@ -3,6 +3,12 @@ export type MediaFilter = "all" | "movie" | "tv" | "direct" | "create" | "act" |
 
 export type WatchOffer = "flatrate" | "free" | "ads" | "rent" | "buy";
 
+export interface StreamingProviderSummary {
+  providerID: number;
+  name: string;
+  logo?: string;
+}
+
 export interface SearchHit {
   id: string;
   tmdbID: number;
@@ -19,6 +25,7 @@ export interface SearchHit {
   providerLogo?: string;
   providerName?: string;
   providerID?: number;
+  streamingProviders?: StreamingProviderSummary[];
   inTheaters?: boolean;
   matchedPerson?: string;
   matchedPersonNames?: string[];

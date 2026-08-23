@@ -96,8 +96,9 @@ body { background: var(--bg); color: var(--text); }
 }
 .hit img { width: 42px; height: 63px; }
 .hit { grid-template-columns: 42px 1fr auto; align-items: center; }
-.hit-provider { width: 24px; height: 24px; border-radius: 6px; object-fit: cover; }
-.hit-provider-name { font-size: 10px; color: var(--muted); white-space: nowrap; }
+.hit-providers { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-end; align-items: center; max-width: 74px; }
+.hit-provider { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; flex: 0 0 16px; }
+.hit-provider-name { font-size: 9px; color: var(--muted); white-space: nowrap; max-width: 74px; overflow: hidden; text-overflow: ellipsis; }
 .recommend { padding-bottom: 12px; }
 .recommend-title { margin: 12px 16px 8px; font-size: 18px; }
 .recommend-section { margin: 14px 16px 6px; font-size: 13px; color: var(--gold); font-weight: 700; }

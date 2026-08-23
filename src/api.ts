@@ -2,7 +2,7 @@ import { lookupKMDB } from "./kmdb";
 import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
-import type { CastMember, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
+import type { CastMember, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
 
 const TMDB = "https://api.themoviedb.org/3";
 
@@ -84,6 +84,7 @@ const STAGE_NAME_PERSON_IDS: Record<string, number> = {
 const PERSON_FILMOGRAPHY_LIMIT = 24;
 const PERSON_HOMONYM_LIMIT = 6;
 const PERSON_MIN_VOTES_FOR_RATING = 10;
+const FILMOGRAPHY_PROVIDER_LIMIT = 4;
 const PERSON_CACHE_TTL_MS = 30 * 60 * 1000;
 const personFilmographyCache = new Map<string, { hits: SearchHit[]; expires: number }>();
 
@@ -265,7 +266,7 @@ async function searchPersonPages(queries: string[], languages: string[]): Promis
 }
 
 function hasStreamingOffer(hit: SearchHit): boolean {
-  return Boolean(hit.providerLogo || hit.providerName);
+  return Boolean(hit.streamingProviders?.length || hit.providerLogo || hit.providerName);
 }
 
 function hasReliableRating(hit: SearchHit): boolean {
@@ -294,6 +295,31 @@ export function sortPersonFilmographyHits(hits: SearchHit[]): SearchHit[] {
   return [...person.sort(comparePersonFilmographyHits), ...rest];
 }
 
+function collectStreamingProviders(country: {
+  flatrate?: ProviderDTO[];
+  free?: ProviderDTO[];
+  ads?: ProviderDTO[];
+}): StreamingProviderSummary[] {
+  const seen = new Set<number>();
+  const providers: StreamingProviderSummary[] = [];
+  const append = (items?: ProviderDTO[]) => {
+    for (const item of items ?? []) {
+      if (seen.has(item.provider_id)) continue;
+      seen.add(item.provider_id);
+      providers.push({
+        providerID: item.provider_id,
+        name: item.provider_name,
+        logo: item.logo_path,
+      });
+      if (providers.length >= FILMOGRAPHY_PROVIDER_LIMIT) return;
+    }
+  };
+  append(country.flatrate);
+  append(country.free);
+  append(country.ads);
+  return providers;
+}
+
 async function enrichHitProvider(hit: SearchHit, region: string): Promise<SearchHit> {
   try {
     const data = await tmdb<{
@@ -305,13 +331,15 @@ async function enrichHitProvider(hit: SearchHit, region: string): Promise<Search
     }>(`/${hit.kind}/${hit.tmdbID}/watch/providers`, { watch_region: region });
     const country = data.results?.[region];
     if (!country) return hit;
-    const provider = country.flatrate?.[0] ?? country.free?.[0] ?? country.ads?.[0];
-    if (!provider) return hit;
+    const streamingProviders = collectStreamingProviders(country);
+    if (!streamingProviders.length) return hit;
+    const primary = streamingProviders[0];
     return {
       ...hit,
-      providerLogo: provider.logo_path,
-      providerName: provider.provider_name,
-      providerID: provider.provider_id,
+      streamingProviders,
+      providerLogo: primary.logo,
+      providerName: primary.name,
+      providerID: primary.providerID,
     };
   } catch {
     return hit;

@@ -277,14 +277,26 @@ function theaterBadgeHTML(): string {
   return `<span class="theater-badge">극장 상영중</span>`;
 }
 
+function hitProvidersHTML(hit: SearchHit): string {
+  const providers = hit.streamingProviders?.length
+    ? hit.streamingProviders
+    : hit.providerLogo || hit.providerName
+      ? [{ providerID: hit.providerID ?? 0, name: hit.providerName ?? "", logo: hit.providerLogo }]
+      : [];
+  if (!providers.length) return "";
+  return `<span class="hit-providers">${providers.map((provider) => (
+    provider.logo
+      ? `<img class="hit-provider" alt="" title="${escapeHTML(provider.name)}" src="${posterURL(provider.logo, "w45") ?? ""}" loading="lazy" decoding="async" />`
+      : `<span class="hit-provider-name">${escapeHTML(provider.name)}</span>`
+  )).join("")}</span>`;
+}
+
 function hitButton(hit: SearchHit, selectedId?: string): string {
   const personMeta = hit.matchedPerson
     ? `${hit.matchedPerson}${hit.matchedRole ? ` · ${hit.matchedRole}` : ""}`
     : "";
   const meta = [personMeta, hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · ");
-  const provider = hit.providerLogo
-    ? `<img class="hit-provider" alt="" title="${escapeHTML(hit.providerName ?? "")}" src="${posterURL(hit.providerLogo, "w92") ?? ""}" />`
-    : (hit.providerName ? `<span class="hit-provider-name">${escapeHTML(hit.providerName)}</span>` : "");
+  const provider = hitProvidersHTML(hit);
   const theater = isInTheaters(hit) ? theaterBadgeHTML() : "";
   return `
     <button class="hit ${selectedId === hit.id ? "selected" : ""}" data-id="${hit.id}">
