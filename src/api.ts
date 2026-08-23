@@ -118,8 +118,21 @@ function creditMediaKind(item: SearchItem): MediaKind | undefined {
   if (item.media_type === "movie" || item.media_type === "tv") return item.media_type;
   if (item.media_type) return undefined;
   if (item.title || item.original_title) return "movie";
-  if (item.name || item.original_name) return "tv";
+  if ((item.name || item.original_name) && (item.first_air_date || item.release_date)) return "tv";
   return undefined;
+}
+
+function isMisclassifiedPersonHit(hit: SearchHit, query: string): boolean {
+  if (hit.matchedPerson) return false;
+  const q = compact(query);
+  if (!q) return false;
+  const title = compact(hit.titleKO || hit.titleEN);
+  if (title !== q) return false;
+  return !hit.year && hit.voteCount < 10;
+}
+
+function filterMisclassifiedPersonHits(hits: SearchHit[], query: string): SearchHit[] {
+  return hits.filter((hit) => !isMisclassifiedPersonHit(hit, query));
 }
 
 function searchItemKey(item: SearchItem): string | undefined {
@@ -468,6 +481,7 @@ async function searchOnce(query: string): Promise<SearchHit[]> {
   const seen = new Set<string>();
   const hits: SearchHit[] = [];
   for (const item of [...ko.results, ...en.results]) {
+    if (item.media_type !== "movie" && item.media_type !== "tv") continue;
     const key = searchItemKey(item);
     if (!key || seen.has(key)) continue;
     const hit = toHit(item, enByID.get(key));
@@ -673,7 +687,7 @@ function titleSearchVariants(query: string): string[] {
 }
 
 export async function searchTitleHits(query: string): Promise<SearchHit[]> {
-  const hits = sortSearchHits(await collect(titleSearchVariants(query)), query);
+  const hits = sortSearchHits(filterMisclassifiedPersonHits(await collect(titleSearchVariants(query)), query), query);
   return localizeHitTitles(hits);
 }
 

@@ -3,7 +3,7 @@ import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
-import { containsHangul } from "./lang";
+import { compact, containsHangul } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
 import { settings } from "./settings";
 import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
@@ -246,6 +246,19 @@ function ottGroupHTML(group: RecommendProvider, hideHead = false): string {
 
 function isInTheaters(hit: SearchHit): boolean {
   return hit.kind === "movie" && nowPlayingIDs.has(hit.tmdbID);
+}
+
+function isMisclassifiedPersonHit(hit: SearchHit, query: string): boolean {
+  if (hit.matchedPerson) return false;
+  const q = compact(query);
+  if (!q) return false;
+  const title = compact(hit.titleKO || hit.titleEN);
+  if (title !== q) return false;
+  return !hit.year && hit.voteCount < 10;
+}
+
+function shouldDeferDetailForPersonSearch(hit: SearchHit | undefined, query: string): boolean {
+  return Boolean(hit && isMisclassifiedPersonHit(hit, query));
 }
 
 function prioritizeNowPlaying(hits: SearchHit[], playing = nowPlayingIDs): SearchHit[] {
@@ -788,10 +801,11 @@ async function runSearch(raw: string): Promise<void> {
     selected = isMobileLayout() ? undefined : hits[0];
     searching = false;
     updateResults();
-    if (selected) {
+    const deferDetail = shouldDeferDetailForPersonSearch(selected, trimmed);
+    if (selected && !deferDetail) {
       void loadSelected();
     } else {
-      loadingDetail = false;
+      loadingDetail = deferDetail;
       updateDetail();
     }
 
