@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, hangulSpaceVariants, isStrongMatch, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, compact, hangulSpaceVariants, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -63,7 +63,9 @@ function toHit(
   english?: SearchItem,
   extras?: Pick<SearchHit, "matchedPerson" | "matchedPersonNames" | "matchedRole">,
 ): SearchHit | undefined {
-  const kind = item.media_type === "movie" || item.media_type === "tv" ? item.media_type : undefined;
+  let kind: MediaKind | undefined = item.media_type === "movie" || item.media_type === "tv" ? item.media_type : undefined;
+  if (!kind && item.name) kind = "tv";
+  if (!kind && (item.title || item.original_title)) kind = "movie";
   if (!kind) return undefined;
   const localized = item.title || item.name || "";
   const original = item.original_title || item.original_name || "";
@@ -91,12 +93,32 @@ interface PersonCandidate {
   names: string[];
 }
 
+function addPersonName(row: PersonCandidate, name?: string): void {
+  const trimmed = name?.trim();
+  if (trimmed && !row.names.includes(trimmed)) row.names.push(trimmed);
+}
+
 function addPersonNames(map: Map<number, PersonCandidate>, person: PersonSearchItem): void {
   const row = map.get(person.id) ?? { id: person.id, names: [] };
-  for (const name of [person.name, person.original_name]) {
-    if (name && !row.names.includes(name)) row.names.push(name);
-  }
+  addPersonName(row, person.name);
+  addPersonName(row, person.original_name);
   map.set(person.id, row);
+}
+
+async function enrichPersonCandidates(people: PersonCandidate[]): Promise<void> {
+  if (!people.length) return;
+  const details = await Promise.all(
+    people.map((person) => Promise.all([
+      tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${person.id}`, { language: "ko-KR" }),
+      tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${person.id}`, { language: "en-US" }),
+    ])),
+  );
+  for (let index = 0; index < people.length; index++) {
+    for (const detail of details[index]) {
+      addPersonName(people[index], detail.name);
+      for (const aka of detail.also_known_as ?? []) addPersonName(people[index], aka);
+    }
+  }
 }
 
 function personMatchScore(names: string[], queries: string[]): number {
@@ -112,15 +134,35 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
   );
 
   const peopleByID = new Map<number, PersonCandidate>();
+  const rankedIDs: number[] = [];
   for (const page of pages) {
-    for (const person of page.results ?? []) addPersonNames(peopleByID, person);
+    for (const person of page.results ?? []) {
+      addPersonNames(peopleByID, person);
+      if (!rankedIDs.includes(person.id)) rankedIDs.push(person.id);
+    }
   }
 
-  const matched = [...peopleByID.values()]
+  const enrichLimit = 10;
+  const bySearchRank = rankedIDs.slice(0, enrichLimit).map((id) => peopleByID.get(id)!);
+  const byNameScore = [...peopleByID.values()].sort(
+    (a, b) => personMatchScore(b.names, queries) - personMatchScore(a.names, queries),
+  );
+  const candidates: PersonCandidate[] = [];
+  const seenIDs = new Set<number>();
+  for (const person of [...bySearchRank, ...byNameScore]) {
+    if (seenIDs.has(person.id)) continue;
+    seenIDs.add(person.id);
+    candidates.push(person);
+    if (candidates.length >= enrichLimit) break;
+  }
+  await enrichPersonCandidates(candidates);
+
+  const lookupLimit = queries.some((query) => compact(query).length <= 4) ? 3 : MAX_PERSON_LOOKUPS;
+  const matched = candidates
     .map((person) => ({ person, score: personMatchScore(person.names, queries) }))
     .filter((row) => row.score >= PERSON_MATCH_MIN)
     .sort((a, b) => b.score - a.score)
-    .slice(0, MAX_PERSON_LOOKUPS);
+    .slice(0, lookupLimit);
 
   if (!matched.length) return [];
 
@@ -394,24 +436,17 @@ export async function localizeHitTitles(hits: SearchHit[]): Promise<SearchHit[]>
 
 export async function searchTitles(query: string): Promise<SearchHit[]> {
   const variants = searchVariants(query);
-  let hits = await collect(variants);
-
-  const strong = hits.some((hit) => isStrongMatch([hit.titleKO, hit.titleEN], query));
-  if (!strong) {
-    const extra = hangulSpaceVariants(query);
-    if (extra.length) {
-      const more = await collect(extra);
-      hits = mergeHits(hits, more);
-    }
+  const titleVariants = [...variants];
+  for (const extra of hangulSpaceVariants(query)) {
+    if (!titleVariants.includes(extra)) titleVariants.push(extra);
   }
 
-  const hasStrongTitle = hits.some((hit) => isStrongMatch([hit.titleKO, hit.titleEN], query));
-  if (!hasStrongTitle) {
-    const personHits = await searchPersonFilmography(variants);
-    hits = mergeHits(hits, personHits);
-  }
+  const [titleHits, personHits] = await Promise.all([
+    collect(titleVariants),
+    searchPersonFilmography(variants),
+  ]);
 
-  return sortSearchHits(hits, query);
+  return sortSearchHits(mergeHits(titleHits, personHits), query);
 }
 
 interface ProviderDTO {
