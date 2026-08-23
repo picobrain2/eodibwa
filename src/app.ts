@@ -1,4 +1,4 @@
-import { fetchDetail, enrichDetail, fetchPopularReviews, providerLink, refineSearchWithImdb, searchTitles, watchaSearchURL } from "./api";
+import { fetchDetail, enrichDetail, fetchPopularReviews, mergeSearchResults, providerLink, refineSearchWithImdb, searchPersonHits, searchTitleHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
@@ -15,6 +15,7 @@ let hits: SearchHit[] = [];
 let selected: SearchHit | undefined;
 let detail: TitleDetail | undefined;
 let searching = false;
+let loadingPersonSearch = false;
 let loadingDetail = false;
 let error = "";
 let debounce: number | undefined;
@@ -531,6 +532,7 @@ function updateResults(): void {
   const mobile = isMobileLayout();
   resultsEl.innerHTML = `
     ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
+    ${loadingPersonSearch ? `<div class="loading inline">출연작 불러오는 중…</div>` : ""}
     ${error && !hits.length && query.trim() ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
     ${showRecommend && mobile ? recommendEntryHTML() : ""}
     ${showRecommend && !mobile ? recommendHTML() : ""}
@@ -752,6 +754,7 @@ async function runSearch(raw: string): Promise<void> {
     hits = [];
     error = "";
     searching = false;
+    loadingPersonSearch = false;
     updateResults();
     return;
   }
@@ -763,6 +766,7 @@ async function runSearch(raw: string): Promise<void> {
 
   const generation = ++searchGeneration;
   searching = true;
+  loadingPersonSearch = false;
   error = "";
   detailGeneration += 1;
   loadingDetail = !isMobileLayout();
@@ -773,15 +777,16 @@ async function runSearch(raw: string): Promise<void> {
   updateDetail();
 
   try {
-    const [nextHits, playing] = await Promise.all([
-      searchTitles(trimmed),
+    const [titleHits, playing] = await Promise.all([
+      searchTitleHits(trimmed),
       loadNowPlaying(settings.region),
     ]);
     if (generation !== searchGeneration) return;
     if (searchInput.value.trim() !== trimmed) return;
     nowPlayingIDs = playing;
-    hits = prioritizeNowPlaying(nextHits, playing);
+    hits = prioritizeNowPlaying(titleHits, playing);
     selected = isMobileLayout() ? undefined : hits[0];
+    searching = false;
     updateResults();
     if (selected) {
       void loadSelected();
@@ -790,10 +795,33 @@ async function runSearch(raw: string): Promise<void> {
       updateDetail();
     }
 
-    void refineSearchWithImdb(nextHits, trimmed).then((refined) => {
+    loadingPersonSearch = true;
+    updateResults();
+
+    void searchPersonHits(trimmed).then((personHits) => {
       if (generation !== searchGeneration) return;
       if (searchInput.value.trim() !== trimmed) return;
-      hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+      loadingPersonSearch = false;
+      const previousSelected = selected?.id;
+      const combined = mergeSearchResults(titleHits, personHits, trimmed);
+      hits = prioritizeNowPlaying(combined, nowPlayingIDs);
+      if (!isMobileLayout()) {
+        selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
+      }
+      updateResults();
+      if (!isMobileLayout() && selected && selected.id !== previousSelected) {
+        void loadSelected();
+      }
+
+      void refineSearchWithImdb(combined, trimmed).then((refined) => {
+        if (generation !== searchGeneration) return;
+        if (searchInput.value.trim() !== trimmed) return;
+        hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+        updateResults();
+      });
+    }).catch(() => {
+      if (generation !== searchGeneration) return;
+      loadingPersonSearch = false;
       updateResults();
     });
   } catch (err) {

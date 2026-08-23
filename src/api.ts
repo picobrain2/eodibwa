@@ -549,7 +549,11 @@ export async function localizeHitTitles(hits: SearchHit[]): Promise<SearchHit[]>
   if (!hits.length || !settings.hasTMDB) return hits;
 
   const unique = [...new Map(hits.map((hit) => [hit.id, hit])).values()];
-  const pending = unique.filter((hit) => !localizedTitleCache.has(hit.id));
+  const pending = unique.filter((hit) => {
+    if (localizedTitleCache.has(hit.id)) return false;
+    if (hit.matchedPerson && containsHangul(hit.titleKO)) return false;
+    return true;
+  });
 
   for (let index = 0; index < pending.length; index += LOCALIZE_BATCH) {
     const batch = pending.slice(index, index + LOCALIZE_BATCH);
@@ -569,7 +573,7 @@ export async function localizeHitTitles(hits: SearchHit[]): Promise<SearchHit[]>
   });
 }
 
-export async function searchTitles(query: string): Promise<SearchHit[]> {
+function titleSearchVariants(query: string): string[] {
   const variants = searchVariants(query);
   const titleVariants = [...variants];
   for (const extra of hangulSpaceVariants(query)) {
@@ -578,14 +582,30 @@ export async function searchTitles(query: string): Promise<SearchHit[]> {
   for (const alias of (PERSON_QUERY_ALIASES[compact(query)] ?? []).filter(containsHangul)) {
     if (!titleVariants.includes(alias)) titleVariants.push(alias);
   }
+  return titleVariants;
+}
 
+export async function searchTitleHits(query: string): Promise<SearchHit[]> {
+  const hits = sortSearchHits(await collect(titleSearchVariants(query)), query);
+  return localizeHitTitles(hits);
+}
+
+export async function searchPersonHits(query: string): Promise<SearchHit[]> {
+  const hits = await searchPersonFilmography(query);
+  if (!hits.length) return hits;
+  return localizeHitTitles(hits);
+}
+
+export function mergeSearchResults(titleHits: SearchHit[], personHits: SearchHit[], query: string): SearchHit[] {
+  return filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), query), query);
+}
+
+export async function searchTitles(query: string): Promise<SearchHit[]> {
   const [titleHits, personHits] = await Promise.all([
-    collect(titleVariants),
-    searchPersonFilmography(query),
+    searchTitleHits(query),
+    searchPersonHits(query),
   ]);
-
-  const merged = filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), query), query);
-  return localizeHitTitles(merged);
+  return mergeSearchResults(titleHits, personHits, query);
 }
 
 interface ProviderDTO {
