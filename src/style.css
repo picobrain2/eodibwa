@@ -94,10 +94,10 @@ body { background: var(--bg); color: var(--text); }
   object-fit: cover;
   border-radius: 8px;
 }
-.hit img { width: 42px; height: 63px; }
+.hit > img { width: 42px; height: 63px; }
 .hit { grid-template-columns: 42px 1fr auto; align-items: center; }
-.hit-providers { display: flex; flex-wrap: wrap; gap: 3px; justify-content: flex-end; align-items: center; max-width: 74px; }
-.hit-provider { width: 16px; height: 16px; border-radius: 4px; object-fit: cover; flex: 0 0 16px; }
+.hit-providers { display: flex; flex-wrap: wrap; gap: 2px; justify-content: flex-end; align-items: center; max-width: 30px; }
+.hit .hit-provider { width: 6px; height: 6px; border-radius: 2px; object-fit: cover; flex: 0 0 6px; background: transparent; }
 .hit-provider-name { font-size: 9px; color: var(--muted); white-space: nowrap; max-width: 74px; overflow: hidden; text-overflow: ellipsis; }
 .recommend { padding-bottom: 12px; }
 .recommend-title { margin: 12px 16px 8px; font-size: 18px; }
