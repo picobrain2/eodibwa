@@ -83,6 +83,7 @@ const STAGE_NAME_PERSON_IDS: Record<string, number> = {
 };
 const PERSON_FILMOGRAPHY_LIMIT = 24;
 const PERSON_HOMONYM_LIMIT = 6;
+const PERSON_MIN_VOTES_FOR_RATING = 10;
 const PERSON_CACHE_TTL_MS = 30 * 60 * 1000;
 const personFilmographyCache = new Map<string, { hits: SearchHit[]; expires: number }>();
 
@@ -267,11 +268,19 @@ function hasStreamingOffer(hit: SearchHit): boolean {
   return Boolean(hit.providerLogo || hit.providerName);
 }
 
+function hasReliableRating(hit: SearchHit): boolean {
+  return popularityVotes(hit) >= PERSON_MIN_VOTES_FOR_RATING;
+}
+
 function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number {
   const ottDiff = Number(hasStreamingOffer(b)) - Number(hasStreamingOffer(a));
   if (ottDiff !== 0) return ottDiff;
-  const ratingDiff = b.voteAverage - a.voteAverage;
-  if (ratingDiff !== 0) return ratingDiff;
+  const reliableDiff = Number(hasReliableRating(b)) - Number(hasReliableRating(a));
+  if (reliableDiff !== 0) return reliableDiff;
+  if (hasReliableRating(a) && hasReliableRating(b)) {
+    const ratingDiff = b.voteAverage - a.voteAverage;
+    if (ratingDiff !== 0) return ratingDiff;
+  }
   const yearA = Number.parseInt(a.year ?? "0", 10) || 0;
   const yearB = Number.parseInt(b.year ?? "0", 10) || 0;
   if (yearB !== yearA) return yearB - yearA;
