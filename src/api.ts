@@ -6,7 +6,7 @@ import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHi
 
 const TMDB = "https://api.themoviedb.org/3";
 
-async function tmdb<T>(path: string, query: Record<string, string> = {}): Promise<T> {
+async function tmdb<T>(path: string, query: Record<string, string> = {}, attempt = 0): Promise<T> {
   const key = settings.tmdb;
   if (!key) throw new Error("TMDB API 키가 필요합니다.");
   const url = new URL(`${TMDB}${path}`);
@@ -18,6 +18,12 @@ async function tmdb<T>(path: string, query: Record<string, string> = {}): Promis
     url.searchParams.set("api_key", key);
   }
   const response = await fetch(url, { headers });
+  if ((response.status === 429 || response.status === 503) && attempt < 5) {
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const wait = retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** attempt;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return tmdb<T>(path, query, attempt + 1);
+  }
   if (response.status === 401) throw new Error("TMDB API 키가 올바르지 않습니다.");
   if (!response.ok) throw new Error(`서버가 ${response.status} 오류를 반환했습니다.`);
   return response.json() as Promise<T>;

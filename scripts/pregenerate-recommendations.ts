@@ -28,9 +28,16 @@ async function generateRegion(region: string): Promise<RecommendBundle> {
 
   for (const genre of RECOMMEND_GENRES) {
     console.log(`  genre ${genre.name} (${genre.id})`);
-    const data = await loadRecommendations(region, genre.id);
-    if (genre.id === 0) trending = data.trending;
-    genres[String(genre.id)] = data.providers;
+    try {
+      const data = await loadRecommendations(region, genre.id);
+      if (genre.id === 0) trending = data.trending;
+      genres[String(genre.id)] = data.providers;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`  genre ${genre.name} skipped: ${message}`);
+      genres[String(genre.id)] = [];
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300));
   }
 
   return {
@@ -61,6 +68,5 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  console.error(err);
-  process.exit(1);
+  console.warn("pregenerate failed — build will continue with existing or live data:", err);
 });

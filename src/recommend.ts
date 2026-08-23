@@ -164,7 +164,7 @@ const discoverCache = new Map<string, { hits: SearchHit[]; expires: number }>();
 const providerIdCache = new Map<string, { ids: number[]; expires: number }>();
 const PROVIDER_ID_TTL_MS = 60 * 60 * 1000;
 
-async function tmdb<T>(path: string, query: Record<string, string> = {}): Promise<T> {
+async function tmdb<T>(path: string, query: Record<string, string> = {}, attempt = 0): Promise<T> {
   const key = settings.tmdb;
   if (!key) throw new Error("TMDB API 키가 필요합니다.");
   const url = new URL(`${TMDB}${path}`);
@@ -173,6 +173,12 @@ async function tmdb<T>(path: string, query: Record<string, string> = {}): Promis
   if (key.startsWith("eyJ")) headers.Authorization = `Bearer ${key}`;
   else url.searchParams.set("api_key", key);
   const response = await fetch(url, { headers });
+  if ((response.status === 429 || response.status === 503) && attempt < 5) {
+    const retryAfter = Number(response.headers.get("retry-after") || 0);
+    const wait = retryAfter > 0 ? retryAfter * 1000 : 1000 * 2 ** attempt;
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    return tmdb<T>(path, query, attempt + 1);
+  }
   if (!response.ok) throw new Error(`서버가 ${response.status} 오류를 반환했습니다.`);
   return response.json() as Promise<T>;
 }
@@ -381,12 +387,11 @@ async function fetchDiscoverPages(
   pages = 2,
 ): Promise<{ ko: (MediaItem & { popularity?: number })[]; en: MediaItem[] }> {
   const pageNums = Array.from({ length: pages }, (_, index) => String(index + 1));
-  const [koPages, en1] = await Promise.all([
-    Promise.all(pageNums.map((page) =>
-      tmdb<{ results: (MediaItem & { popularity?: number })[] }>(`/discover/${kind}`, { ...query, page }),
-    )),
-    tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, page: "1", language: "en-US" }),
-  ]);
+  const koPages: { results: (MediaItem & { popularity?: number })[] }[] = [];
+  for (const page of pageNums) {
+    koPages.push(await tmdb(`/discover/${kind}`, { ...query, page }));
+  }
+  const en1 = await tmdb<{ results: MediaItem[] }>(`/discover/${kind}`, { ...query, page: "1", language: "en-US" });
 
   const merged = new Map<number, MediaItem & { popularity?: number }>();
   for (const page of koPages) {
