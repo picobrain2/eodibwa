@@ -1,5 +1,6 @@
 import { fetchDetail, enrichDetail, fetchPopularReviews, providerLink, refineSearchWithImdb, searchTitles, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
+import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
@@ -29,6 +30,7 @@ let nowPlayingIDs = new Set<number>();
 let providerRecommendGeneration = 0;
 let recommendError = "";
 let recommendLoadScheduled = false;
+let recommendFromBundle = false;
 let showRecommendPage = false;
 let showDetailPage = false;
 let suppressHistory = false;
@@ -428,19 +430,42 @@ function mount(): void {
   });
 }
 
+function recommendHintText(): string {
+  if (recommendFromBundle) {
+    return "OTT 추천 목록은 서버에서 미리 준비됩니다. 배포·자동 갱신 시 최신 데이터로 업데이트됩니다.";
+  }
+  if (settings.hasMOTN) {
+    if (motnCacheFresh(settings.region)) {
+      return "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작입니다.";
+    }
+    if (loadingRecommend || loadingProviderRecommend) {
+      return "Netflix·Disney+ 공식 Top 10을 불러오는 중…";
+    }
+    return "Netflix·Disney+ Top 10을 불러오지 못해 TMDB 급상승으로 표시합니다.";
+  }
+  return "TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작, Netflix 등은 Movie of the Night 공식 Top 10을 사용합니다.";
+}
+
+function applyRecommendBundle(bundle: RecommendBundle, genreID = selectedGenreID): void {
+  recommendTrending = bundle.trending;
+  recommendProviders = providersForGenre(bundle, genreID);
+  recommendFromBundle = true;
+  recommendLoaded = true;
+  ensureSelectedProvider();
+  if (!recommendProviders.length) {
+    recommendError = "OTT 추천을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.";
+  } else {
+    recommendError = "";
+  }
+}
+
 function recommendHTML(options?: { hideTitle?: boolean }): string {
   if (!settings.hasTMDB) {
     return `<div class="empty">추천을 불러올 수 없습니다.</div>`;
   }
   if (loadingRecommend) return `<div class="loading">추천 불러오는 중…</div>`;
   const genreLabel = selectedGenreID === 0 ? "" : ` · ${escapeHTML(activeGenreName())}`;
-  const motnHint = settings.hasMOTN
-    ? (motnCacheFresh(settings.region)
-      ? "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작입니다."
-      : (loadingRecommend || loadingProviderRecommend)
-        ? "Netflix·Disney+ 공식 Top 10을 불러오는 중…"
-        : "Netflix·Disney+ Top 10을 불러오지 못해 TMDB 급상승으로 표시합니다.")
-    : "TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작, Netflix 등은 Movie of the Night 공식 Top 10을 사용합니다.";
+  const motnHint = recommendHintText();
   return `
     <div class="recommend">
       ${options?.hideTitle ? "" : `<h2 class="recommend-title">오늘 뭐 볼까</h2>`}
@@ -547,7 +572,9 @@ function bindDetailControls(root: ParentNode): void {
     settings.region = next;
     invalidateNowPlaying();
     invalidateRecommendChart();
+    clearRecommendBundleCache();
     recommendLoaded = false;
+    recommendFromBundle = false;
     selectedProviderID = 8;
     ensureSelectedProvider();
     void refreshNowPlaying().then(() => {
@@ -670,12 +697,13 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
       </button>`).join("")}</div></section>` : ""}
     <section class="section links">
       <a href="${d.tmdbURL}" target="_blank" rel="noreferrer">TMDB에서 열기</a>
+      ${d.kmdbURL ? `<a href="${d.kmdbURL}" target="_blank" rel="noreferrer">KMDb에서 열기</a>` : ""}
       ${d.imdbID ? `<a href="https://www.imdb.com/title/${d.imdbID}/" target="_blank" rel="noreferrer">IMDb에서 열기</a>` : ""}
       ${d.wikipediaURL ? `<a href="${d.wikipediaURL}" target="_blank" rel="noreferrer">위키백과</a>` : ""}
       <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(`${primary} 예고편 trailer`)}" target="_blank" rel="noreferrer">예고편</a>
       ${d.homepage ? `<a href="${d.homepage}" target="_blank" rel="noreferrer">공식 사이트</a>` : ""}
     </section>
-    <p class="attr">작품 정보 TMDB · 시리즈 TVMaze · 시청 가능 플랫폼 JustWatch</p>
+    <p class="attr">작품 정보 TMDB${settings.hasKMDB ? " · 한국영화 KMDb" : ""} · 시리즈 TVMaze · 시청 가능 플랫폼 JustWatch</p>
   `;
 }
 
@@ -851,6 +879,14 @@ export async function loadRecommendations(): Promise<void> {
   updateResults();
   updateRecommendPage();
   try {
+    const bundle = await getRecommendBundle(settings.region);
+    if (bundle && recommendBundleFresh(bundle)) {
+      applyRecommendBundle(bundle, selectedGenreID);
+      await refreshNowPlaying();
+      return;
+    }
+
+    recommendFromBundle = false;
     const [data] = await Promise.all([
       fetchRecommendations(settings.region, selectedGenreID),
       refreshNowPlaying(),
@@ -865,6 +901,7 @@ export async function loadRecommendations(): Promise<void> {
   } catch (err) {
     recommendTrending = [];
     recommendProviders = [];
+    recommendFromBundle = false;
     recommendError = err instanceof Error ? err.message : "OTT 추천을 불러오지 못했습니다.";
   } finally {
     loadingRecommend = false;
@@ -876,6 +913,19 @@ export async function loadRecommendations(): Promise<void> {
 
 async function reloadProviderRecommendations(): Promise<void> {
   if (!settings.hasTMDB || !recommendLoaded) return;
+
+  const bundle = await getRecommendBundle(settings.region);
+  if (bundle && recommendBundleFresh(bundle)) {
+    recommendProviders = providersForGenre(bundle, selectedGenreID);
+    recommendFromBundle = true;
+    recommendError = visibleRecommendProviders()[0]?.hits.length
+      ? ""
+      : "이 장르에 해당하는 OTT 작품을 찾지 못했습니다.";
+    updateResults();
+    updateRecommendPage();
+    return;
+  }
+
   const generation = ++providerRecommendGeneration;
   loadingProviderRecommend = true;
   recommendError = "";
@@ -890,6 +940,7 @@ async function reloadProviderRecommendations(): Promise<void> {
     );
     if (generation !== providerRecommendGeneration) return;
     recommendProviders = providers;
+    recommendFromBundle = false;
     if (!visibleRecommendProviders()[0]?.hits.length) {
       recommendError = "이 장르에 해당하는 OTT 작품을 찾지 못했습니다.";
     }

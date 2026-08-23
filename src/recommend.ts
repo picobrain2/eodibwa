@@ -48,6 +48,8 @@ export function regionProviderIDs(region: string): number[] {
   return PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
 }
 
+export const RECOMMEND_REGIONS = Object.keys(PROVIDER_IDS);
+
 /** KR local OTTs — use TMDB discover + watch provider (not network IDs). */
 const TMDB_DISCOVER_PROVIDERS = new Set([1883, 356, 97, 1881]);
 

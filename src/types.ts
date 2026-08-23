@@ -75,6 +75,7 @@ export interface TitleDetail {
   networks: string[];
   extraLinks: { name: string; url: string }[];
   wikipediaURL?: string;
+  kmdbURL?: string;
   popularReviews: PopularReview[];
   inTheaters?: boolean;
 }

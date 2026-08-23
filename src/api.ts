@@ -1,3 +1,4 @@
+import { lookupKMDB } from "./kmdb";
 import { containsHangul, hangulSpaceVariants, isStrongMatch, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
@@ -507,6 +508,7 @@ export async function enrichDetail(detail: TitleDetail): Promise<void> {
     enrichOMDb(detail),
     enrichTVMaze(detail),
     enrichWikipedia(detail),
+    enrichKMDB(detail),
   ]);
 
   if (detail.kind === "movie") {
@@ -723,6 +725,20 @@ async function enrichWikipedia(detail: TitleDetail): Promise<void> {
     detail.wikipediaURL = summary.content_urls?.desktop?.page;
   } catch {
     // optional
+  }
+}
+
+async function enrichKMDB(detail: TitleDetail): Promise<void> {
+  if (detail.kind !== "movie" || !settings.hasKMDB) return;
+  try {
+    const entry = await lookupKMDB(detail.titleKO, detail.titleEN, detail.year, detail.director);
+    if (!entry) return;
+    detail.kmdbURL = entry.kmdbURL;
+    if (!detail.certification && entry.rating) detail.certification = entry.rating;
+    if (!detail.overview && entry.plot) detail.overview = entry.plot;
+    if (!detail.posterPath && entry.posterURL) detail.posterPath = entry.posterURL;
+  } catch {
+    // optional — key may be pending approval or API may block browser CORS
   }
 }
 
