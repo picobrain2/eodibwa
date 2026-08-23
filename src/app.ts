@@ -1,4 +1,4 @@
-import { fetchDetail, enrichDetail, fetchPopularReviews, mergeSearchResults, providerLink, refineSearchWithImdb, searchPersonHits, searchPersonKnownHits, searchTitleHits, watchaSearchURL } from "./api";
+import { fetchDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, searchPersonHits, searchPersonKnownHits, searchTitleHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
@@ -248,17 +248,12 @@ function isInTheaters(hit: SearchHit): boolean {
   return hit.kind === "movie" && nowPlayingIDs.has(hit.tmdbID);
 }
 
-function isMisclassifiedPersonHit(hit: SearchHit, query: string): boolean {
-  if (hit.matchedPerson) return false;
-  const q = compact(query);
-  if (!q) return false;
-  const title = compact(hit.titleKO || hit.titleEN);
-  if (title !== q) return false;
-  return !hit.year && hit.voteCount < 10;
-}
-
 function shouldDeferDetailForPersonSearch(hit: SearchHit | undefined, query: string): boolean {
-  return Boolean(hit && isMisclassifiedPersonHit(hit, query));
+  if (!hit || hit.matchedPerson) return false;
+  if (isKnownStageNameQuery(query)) return true;
+  if (isPersonSearchTitleNoise(hit, query)) return true;
+  if (containsHangul(query) && compact(query).length <= 4) return true;
+  return false;
 }
 
 function prioritizeNowPlaying(hits: SearchHit[], playing = nowPlayingIDs): SearchHit[] {

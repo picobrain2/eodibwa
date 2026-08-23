@@ -77,7 +77,8 @@ const PERSON_QUERY_ALIASES: Record<string, string[]> = {
   iu: ["아이유"],
 };
 const STAGE_NAME_PERSON_IDS: Record<string, number> = {
-  iu: 1299479,
+  iu: 1252318,
+  하하: 138519,
   나영석: 1697747,
 };
 const PERSON_FILMOGRAPHY_LIMIT = 24;
@@ -127,17 +128,23 @@ function creditMediaKind(item: SearchItem): MediaKind | undefined {
   return undefined;
 }
 
-function isMisclassifiedPersonHit(hit: SearchHit, query: string): boolean {
+export function isKnownStageNameQuery(query: string): boolean {
+  return Boolean(STAGE_NAME_PERSON_IDS[compact(query)]);
+}
+
+export function isPersonSearchTitleNoise(hit: SearchHit, query: string): boolean {
   if (hit.matchedPerson) return false;
   const q = compact(query);
   if (!q) return false;
   const title = compact(hit.titleKO || hit.titleEN);
-  if (title !== q) return false;
-  return !hit.year && hit.voteCount < 10;
+  if (!title) return false;
+  if (title === q && !hit.year && hit.voteCount < 10) return true;
+  if (containsHangul(query) && title.startsWith(q) && title.length > q.length) return true;
+  return false;
 }
 
-function filterMisclassifiedPersonHits(hits: SearchHit[], query: string): SearchHit[] {
-  return hits.filter((hit) => !isMisclassifiedPersonHit(hit, query));
+function filterPersonSearchTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
+  return hits.filter((hit) => !isPersonSearchTitleNoise(hit, query));
 }
 
 function searchItemKey(item: SearchItem): string | undefined {
@@ -443,10 +450,12 @@ function filterShortLatinTitleHits(hits: SearchHit[], query: string): SearchHit[
 
 function filterTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
   const hasFilmography = hits.some((hit) => hit.matchedPerson);
-  const shortQuery = compact(query).length <= 4;
-  if (!hasFilmography || !shortQuery || !isLatinOnly(query)) return hits;
-
-  return hits.filter((hit) => hit.matchedPerson);
+  if (!hasFilmography) return hits;
+  const q = compact(query);
+  if (q.length <= 4 && (isLatinOnly(query) || containsHangul(query))) {
+    return hits.filter((hit) => hit.matchedPerson);
+  }
+  return filterPersonSearchTitleNoise(hits, query);
 }
 
 function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
@@ -730,7 +739,7 @@ function titleSearchVariants(query: string): string[] {
   const key = compact(query);
   const variants = searchVariants(query);
   const titleVariants = [...variants];
-  if (key.length <= 4 && isLatinOnly(query) && STAGE_NAME_PERSON_IDS[key]) {
+  if (isKnownStageNameQuery(query)) {
     return titleVariants;
   }
   for (const extra of hangulSpaceVariants(query)) {
@@ -743,10 +752,10 @@ function titleSearchVariants(query: string): string[] {
 }
 
 export async function searchTitleHits(query: string): Promise<SearchHit[]> {
-  if (STAGE_NAME_PERSON_IDS[compact(query)]) return [];
+  if (isKnownStageNameQuery(query)) return [];
   const hits = sortSearchHits(
-    filterShortLatinTitleHits(
-      filterMisclassifiedPersonHits(await collect(titleSearchVariants(query)), query),
+    filterPersonSearchTitleNoise(
+      filterShortLatinTitleHits(await collect(titleSearchVariants(query)), query),
       query,
     ),
     query,
