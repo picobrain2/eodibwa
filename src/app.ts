@@ -482,6 +482,9 @@ function bindProviderControls(root: ParentNode): void {
       selectedProviderID = next;
       updateResults();
       updateRecommendPage();
+      if (selectedGenreID !== 0) {
+        void reloadProviderRecommendations();
+      }
     });
   });
 }
