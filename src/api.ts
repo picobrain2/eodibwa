@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, compact, hangulSpaceVariants, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, compact, formatCreditRole, hangulSpaceVariants, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -225,14 +225,14 @@ function appendPersonCredits(
   extras: Pick<SearchHit, "matchedPerson" | "matchedPersonNames">,
 ): void {
   for (const item of credits.combined.cast ?? []) {
-    const hit = toHit(item, undefined, { ...extras, matchedRole: item.character?.trim() || "출연" });
+    const hit = toHit(item, undefined, { ...extras, matchedRole: formatCreditRole(item.character) });
     if (!hit || seen.has(hit.id)) continue;
     seen.add(hit.id);
     hits.push(hit);
   }
 
   for (const item of credits.tv.cast ?? []) {
-    const hit = toHit(item, undefined, { ...extras, matchedRole: item.character?.trim() || "출연" });
+    const hit = toHit(item, undefined, { ...extras, matchedRole: formatCreditRole(item.character) });
     if (!hit || seen.has(hit.id)) continue;
     seen.add(hit.id);
     hits.push(hit);
@@ -737,7 +737,7 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
   const cast: CastMember[] = [...(ko.credits?.cast ?? [])]
     .sort((a, b) => (a.order ?? 99) - (b.order ?? 99))
     .slice(0, 8)
-    .map((person) => ({ id: person.id, name: person.name ?? "", role: person.character ?? "", profilePath: person.profile_path }))
+    .map((person) => ({ id: person.id, name: person.name ?? "", role: formatCreditRole(person.character), profilePath: person.profile_path }))
     .filter((person) => person.name);
 
   const detail: TitleDetail = {

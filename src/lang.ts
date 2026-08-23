@@ -30,6 +30,14 @@ export function pickEnglish(candidates: string[]): string {
   return cleaned.find((item) => !containsHangul(item)) ?? "";
 }
 
+const GENERIC_CREDIT_ROLES = /^(self|himself|herself|themselves|guest|guest self|guest star|n\/a|none|-)$/i;
+
+export function formatCreditRole(character?: string): string {
+  const trimmed = character?.trim();
+  if (!trimmed || GENERIC_CREDIT_ROLES.test(trimmed)) return "출연";
+  return trimmed;
+}
+
 export function searchVariants(raw: string): string[] {
   const spaced = collapsed(raw);
   const squeezed = compact(spaced);
