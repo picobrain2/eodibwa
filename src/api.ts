@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, compact, hangulSpaceVariants, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, compact, hangulSpaceVariants, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -42,6 +42,7 @@ interface PersonSearchItem {
   id: number;
   name?: string;
   original_name?: string;
+  popularity?: number;
 }
 
 interface CreditItem extends SearchItem {
@@ -52,6 +53,28 @@ interface CreditItem extends SearchItem {
 const PERSON_MATCH_MIN = 60;
 const MAX_PERSON_LOOKUPS = 2;
 const DIRECTOR_JOBS = new Set(["Director", "Creator", "Co-Director"]);
+const PERSON_QUERY_ALIASES: Record<string, string[]> = {
+  iu: ["아이유", "Lee Ji-eun", "이지은"],
+};
+
+function personSearchQueries(query: string): string[] {
+  const variants = searchVariants(query);
+  const aliases = PERSON_QUERY_ALIASES[compact(query)] ?? [];
+  const merged = [...variants];
+  for (const alias of aliases) {
+    if (!merged.includes(alias)) merged.push(alias);
+  }
+  return merged;
+}
+
+function personMatchMin(query: string): number {
+  if (compact(query).length <= 4 && isLatinOnly(query)) return 80;
+  return PERSON_MATCH_MIN;
+}
+
+function personMatchMinForQueries(queries: string[]): number {
+  return Math.min(...queries.map((query) => personMatchMin(query)));
+}
 
 function yearOf(item: SearchItem): string | undefined {
   const date = item.release_date || item.first_air_date || "";
@@ -91,6 +114,7 @@ function toHit(
 interface PersonCandidate {
   id: number;
   names: string[];
+  popularity: number;
 }
 
 function addPersonName(row: PersonCandidate, name?: string): void {
@@ -99,7 +123,8 @@ function addPersonName(row: PersonCandidate, name?: string): void {
 }
 
 function addPersonNames(map: Map<number, PersonCandidate>, person: PersonSearchItem): void {
-  const row = map.get(person.id) ?? { id: person.id, names: [] };
+  const row = map.get(person.id) ?? { id: person.id, names: [], popularity: 0 };
+  row.popularity = Math.max(row.popularity, person.popularity ?? 0);
   addPersonName(row, person.name);
   addPersonName(row, person.original_name);
   map.set(person.id, row);
@@ -142,10 +167,11 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
     }
   }
 
-  const enrichLimit = 10;
+  const enrichLimit = 12;
   const bySearchRank = rankedIDs.slice(0, enrichLimit).map((id) => peopleByID.get(id)!);
   const byNameScore = [...peopleByID.values()].sort(
-    (a, b) => personMatchScore(b.names, queries) - personMatchScore(a.names, queries),
+    (a, b) => personMatchScore(b.names, queries) - personMatchScore(a.names, queries)
+      || b.popularity - a.popularity,
   );
   const candidates: PersonCandidate[] = [];
   const seenIDs = new Set<number>();
@@ -157,19 +183,21 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
   }
   await enrichPersonCandidates(candidates);
 
-  const lookupLimit = queries.some((query) => compact(query).length <= 4) ? 3 : MAX_PERSON_LOOKUPS;
+  const minScore = personMatchMinForQueries(queries);
+  const lookupLimit = queries.some((query) => compact(query).length <= 4) ? 5 : MAX_PERSON_LOOKUPS;
   const matched = candidates
     .map((person) => ({ person, score: personMatchScore(person.names, queries) }))
-    .filter((row) => row.score >= PERSON_MATCH_MIN)
-    .sort((a, b) => b.score - a.score)
+    .filter((row) => row.score >= minScore)
+    .sort((a, b) => b.score - a.score || b.person.popularity - a.person.popularity)
     .slice(0, lookupLimit);
 
   if (!matched.length) return [];
 
   const creditPages = await Promise.all(
-    matched.map(({ person }) =>
+    matched.map(({ person }) => Promise.all([
       tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${person.id}/combined_credits`, { language: "ko-KR" }),
-    ),
+      tmdb<{ cast?: CreditItem[] }>(`/person/${person.id}/tv_credits`, { language: "ko-KR" }),
+    ])),
   );
 
   const seen = new Set<string>();
@@ -178,12 +206,15 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
   for (let index = 0; index < matched.length; index++) {
     const { person } = matched[index];
     const personName = pickKorean(person.names) || person.names[0] || "";
-    const credits = creditPages[index];
+    const extras = {
+      matchedPerson: personName,
+      matchedPersonNames: person.names,
+    };
+    const [combined, tvCredits] = creditPages[index];
 
-    for (const item of credits.cast ?? []) {
+    for (const item of combined.cast ?? []) {
       const hit = toHit(item, undefined, {
-        matchedPerson: personName,
-        matchedPersonNames: person.names,
+        ...extras,
         matchedRole: item.character?.trim() || "출연",
       });
       if (!hit || seen.has(hit.id)) continue;
@@ -191,11 +222,20 @@ async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> 
       hits.push(hit);
     }
 
-    for (const item of credits.crew ?? []) {
+    for (const item of tvCredits.cast ?? []) {
+      const hit = toHit(item, undefined, {
+        ...extras,
+        matchedRole: item.character?.trim() || "출연",
+      });
+      if (!hit || seen.has(hit.id)) continue;
+      seen.add(hit.id);
+      hits.push(hit);
+    }
+
+    for (const item of combined.crew ?? []) {
       if (!item.job || !DIRECTOR_JOBS.has(item.job)) continue;
       const hit = toHit(item, undefined, {
-        matchedPerson: personName,
-        matchedPersonNames: person.names,
+        ...extras,
         matchedRole: "감독",
       });
       if (!hit || seen.has(hit.id)) continue;
@@ -215,14 +255,31 @@ function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
 }
 
 function mergeHits(primary: SearchHit[], extra: SearchHit[]): SearchHit[] {
-  const seen = new Set(primary.map((hit) => hit.id));
-  const merged = [...primary];
+  const byID = new Map<string, SearchHit>();
+  for (const hit of primary) byID.set(hit.id, hit);
   for (const hit of extra) {
-    if (seen.has(hit.id)) continue;
-    seen.add(hit.id);
-    merged.push(hit);
+    const existing = byID.get(hit.id);
+    if (!existing) {
+      byID.set(hit.id, hit);
+      continue;
+    }
+    if (hit.matchedPerson && !existing.matchedPerson) {
+      byID.set(hit.id, {
+        ...existing,
+        matchedPerson: hit.matchedPerson,
+        matchedPersonNames: hit.matchedPersonNames,
+        matchedRole: hit.matchedRole,
+      });
+    }
   }
-  return merged;
+  return [...byID.values()];
+}
+
+function isKoreanHit(hit: SearchHit): boolean {
+  if (containsHangul(hit.titleKO)) return true;
+  if (hit.matchedPersonNames?.some(containsHangul)) return true;
+  if (hit.matchedPerson && containsHangul(hit.matchedPerson)) return true;
+  return false;
 }
 
 function searchHitScore(hit: SearchHit, query: string): number {
@@ -232,9 +289,27 @@ function searchHitScore(hit: SearchHit, query: string): number {
     : hit.matchedPerson
       ? relevance([hit.matchedPerson], query)
       : 0;
-  if (titleScore >= 80) return titleScore * 1000 + popularityVotes(hit);
-  if (personScore >= PERSON_MATCH_MIN) return personScore * 100 + titleScore + popularityVotes(hit) / 1000;
-  return titleScore * 10 + popularityVotes(hit) / 1000;
+  const personMatched = personScore >= personMatchMin(query);
+  const korean = isKoreanHit(hit);
+  const votes = popularityVotes(hit);
+  const shortQuery = compact(query).length <= 4;
+
+  if (personMatched && personScore >= 80 && shortQuery) {
+    return 3_000_000 + personScore * 1_000 + (korean ? 50_000 : 0) + votes;
+  }
+  if (personMatched && korean) {
+    return 2_000_000 + personScore * 1_000 + titleScore * 10 + votes;
+  }
+  if (personMatched) {
+    return 1_000_000 + personScore * 1_000 + titleScore * 10 + votes;
+  }
+  if (korean && titleScore >= 60) {
+    return 100_000 + titleScore * 1_000 + votes;
+  }
+  if (titleScore >= 80) {
+    return titleScore * 1_000 + votes;
+  }
+  return titleScore * 10 + votes / 1_000;
 }
 
 async function searchOnce(query: string): Promise<SearchHit[]> {
@@ -443,10 +518,11 @@ export async function searchTitles(query: string): Promise<SearchHit[]> {
 
   const [titleHits, personHits] = await Promise.all([
     collect(titleVariants),
-    searchPersonFilmography(variants),
+    searchPersonFilmography(personSearchQueries(query)),
   ]);
 
-  return sortSearchHits(mergeHits(titleHits, personHits), query);
+  const merged = sortSearchHits(mergeHits(titleHits, personHits), query);
+  return localizeHitTitles(merged);
 }
 
 interface ProviderDTO {

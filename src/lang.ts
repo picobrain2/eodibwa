@@ -4,6 +4,11 @@ export function containsHangul(text: string): boolean {
   return HANGUL.test(text);
 }
 
+export function isLatinOnly(text: string): boolean {
+  const squeezed = compact(text);
+  return squeezed.length > 0 && ![...squeezed].some((ch) => HANGUL.test(ch));
+}
+
 export function compact(text: string): string {
   return [...text.toLowerCase()].filter((ch) => /[0-9a-z\uAC00-\uD7A3]/i.test(ch)).join("");
 }
