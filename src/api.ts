@@ -58,7 +58,17 @@ interface CreditItem extends SearchItem {
 }
 
 const PERSON_MATCH_MIN = 60;
-const DIRECTOR_JOBS = new Set(["Director", "Creator", "Co-Director"]);
+const PERSON_CREW_JOBS = new Set([
+  "Director",
+  "Creator",
+  "Co-Director",
+  "Writer",
+  "Screenplay",
+  "Story",
+  "Teleplay",
+  "Author",
+]);
+const PERSON_KNOWN_FOR_MIN = 1;
 const PERSON_QUERY_ALIASES: Record<string, string[]> = {
   iu: ["아이유"],
 };
@@ -110,6 +120,11 @@ function creditMediaKind(item: SearchItem): MediaKind | undefined {
   if (item.title || item.original_title) return "movie";
   if (item.name || item.original_name) return "tv";
   return undefined;
+}
+
+function searchItemKey(item: SearchItem): string | undefined {
+  const kind = creditMediaKind(item);
+  return kind && item.id ? `${kind}-${item.id}` : undefined;
 }
 
 function toHit(
@@ -244,7 +259,7 @@ function appendPersonCredits(
   }
 
   for (const item of credits.combined.crew ?? []) {
-    if (!item.job || !DIRECTOR_JOBS.has(item.job)) continue;
+    if (!item.job || !PERSON_CREW_JOBS.has(item.job)) continue;
     const hit = toHit(item, undefined, { ...extras, matchedRole: "감독" });
     if (!hit || seen.has(hit.id)) continue;
     seen.add(hit.id);
@@ -295,7 +310,7 @@ export async function searchPersonKnownHits(query: string): Promise<SearchHit[]>
     }
 
     const person = await pickMatchedPerson(query);
-    if (!person || person.knownFor.length < 4) return [];
+    if (!person || person.knownFor.length < PERSON_KNOWN_FOR_MIN) return [];
     return personHitsFromCredits(person, { combined: { cast: person.knownFor }, tv: {} });
   } catch {
     return [];
@@ -344,7 +359,7 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
     const hits: SearchHit[] = [];
     const seen = new Set<string>();
 
-    if (person.knownFor.length >= 4) {
+    if (person.knownFor.length) {
       appendPersonCredits(hits, seen, { combined: { cast: person.knownFor }, tv: {} }, extras);
     }
 
@@ -445,15 +460,19 @@ async function searchOnce(query: string): Promise<SearchHit[]> {
     tmdb<{ results: SearchItem[] }>("/search/multi", { query, language: "ko-KR", include_adult: "false", page: "1" }),
     tmdb<{ results: SearchItem[] }>("/search/multi", { query, language: "en-US", include_adult: "false", page: "1" }),
   ]);
-  const enByID = new Map(en.results.filter((item) => item.media_type === "movie" || item.media_type === "tv").map((item) => [`${item.media_type}-${item.id}`, item]));
+  const enByID = new Map<string, SearchItem>();
+  for (const item of en.results) {
+    const key = searchItemKey(item);
+    if (key) enByID.set(key, item);
+  }
   const seen = new Set<string>();
   const hits: SearchHit[] = [];
   for (const item of [...ko.results, ...en.results]) {
-    const key = `${item.media_type}-${item.id}`;
-    if (seen.has(key)) continue;
+    const key = searchItemKey(item);
+    if (!key || seen.has(key)) continue;
     const hit = toHit(item, enByID.get(key));
     if (!hit) continue;
-    seen.add(key);
+    seen.add(hit.id);
     hits.push(hit);
   }
   return hits;
@@ -787,11 +806,41 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
     return { ...cached.detail, popularReviews: [...cached.detail.popularReviews] };
   }
 
+  try {
+    const detail = await buildDetail(kind, id);
+    detailCache.set(cacheKey, { detail: { ...detail }, expires: Date.now() + DETAIL_TTL_MS });
+    return { ...detail };
+  } catch (err) {
+    if (!(err instanceof Error && err.message.includes("404"))) throw err;
+    const alt: MediaKind = kind === "movie" ? "tv" : "movie";
+    const altKey = detailCacheKey(alt, id);
+    const altCached = detailCache.get(altKey);
+    if (altCached && altCached.expires > Date.now()) {
+      return { ...altCached.detail, popularReviews: [...altCached.detail.popularReviews] };
+    }
+    const detail = await buildDetail(alt, id);
+    detail.kind = alt;
+    detail.tmdbURL = `https://www.themoviedb.org/${alt}/${detail.tmdbID}?language=ko-KR`;
+    detailCache.set(altKey, { detail: { ...detail }, expires: Date.now() + DETAIL_TTL_MS });
+    return { ...detail };
+  }
+}
+
+async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
   const append = kind === "movie" ? "watch/providers,external_ids,credits,release_dates" : "watch/providers,external_ids,credits,content_ratings";
-  const [ko, en] = await Promise.all([
+  const [koResult, enResult] = await Promise.allSettled([
     tmdb<DetailDTO>(`/${kind}/${id}`, { language: "ko-KR", append_to_response: append }),
     tmdb<DetailDTO>(`/${kind}/${id}`, { language: "en-US" }),
   ]);
+  if (koResult.status === "rejected" && enResult.status === "rejected") {
+    throw koResult.reason;
+  }
+  const ko = (koResult.status === "fulfilled"
+    ? koResult.value
+    : enResult.status === "fulfilled"
+      ? enResult.value
+      : undefined) as DetailDTO;
+  const en = (enResult.status === "fulfilled" ? enResult.value : ko) as DetailDTO;
   const localized = ko.title || ko.name || "";
   const original = ko.original_title || ko.original_name || "";
   const enLocalized = en.title || en.name || "";
@@ -806,7 +855,7 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
     .map((person) => ({ id: person.id, name: person.name ?? "", role: formatCreditRole(person.character), profilePath: person.profile_path }))
     .filter((person) => person.name);
 
-  const detail: TitleDetail = {
+  return {
     tmdbID: ko.id,
     kind,
     titleKO: pickKorean([localized, original, enLocalized, enOriginal]),
@@ -832,9 +881,6 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
     extraLinks: [],
     popularReviews: [],
   };
-
-  detailCache.set(cacheKey, { detail: { ...detail }, expires: Date.now() + DETAIL_TTL_MS });
-  return { ...detail };
 }
 
 export async function fetchPopularReviews(kind: MediaKind, id: number, _titleKO = "", _titleEN = ""): Promise<PopularReview[]> {

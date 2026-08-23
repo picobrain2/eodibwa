@@ -812,7 +812,7 @@ async function runSearch(raw: string): Promise<void> {
             const previousSelected = selected?.id;
             selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
             updateResults();
-            if (selected && selected.id !== previousSelected) {
+            if (selected && (!previousSelected || selected.id !== previousSelected)) {
               void loadSelected();
             }
           } else {
@@ -843,7 +843,7 @@ async function runSearch(raw: string): Promise<void> {
           selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
         }
         updateResults();
-        if (!isMobileLayout() && selected && selected.id !== previousSelected) {
+        if (!isMobileLayout() && selected && (!previousSelected || selected.id !== previousSelected)) {
           void loadSelected();
         }
 
