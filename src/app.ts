@@ -1,4 +1,4 @@
-import { fetchDetail, enrichDetail, fetchPopularReviews, mergeSearchResults, providerLink, refineSearchWithImdb, searchPersonHits, searchTitleHits, watchaSearchURL } from "./api";
+import { fetchDetail, enrichDetail, fetchPopularReviews, mergeSearchResults, providerLink, refineSearchWithImdb, searchPersonHits, searchPersonKnownHits, searchTitleHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
@@ -798,32 +798,61 @@ async function runSearch(raw: string): Promise<void> {
     loadingPersonSearch = true;
     updateResults();
 
-    void searchPersonHits(trimmed).then((personHits) => {
-      if (generation !== searchGeneration) return;
-      if (searchInput.value.trim() !== trimmed) return;
-      loadingPersonSearch = false;
-      const previousSelected = selected?.id;
-      const combined = mergeSearchResults(titleHits, personHits, trimmed);
-      hits = prioritizeNowPlaying(combined, nowPlayingIDs);
-      if (!isMobileLayout()) {
-        selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
-      }
-      updateResults();
-      if (!isMobileLayout() && selected && selected.id !== previousSelected) {
-        void loadSelected();
-      }
-
-      void refineSearchWithImdb(combined, trimmed).then((refined) => {
+    void (async () => {
+      try {
+        const quickHits = await searchPersonKnownHits(trimmed);
         if (generation !== searchGeneration) return;
         if (searchInput.value.trim() !== trimmed) return;
-        hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+
+        let combined = titleHits;
+        if (quickHits.length) {
+          combined = mergeSearchResults(titleHits, quickHits, trimmed);
+          hits = prioritizeNowPlaying(combined, nowPlayingIDs);
+          if (!isMobileLayout()) {
+            selected = hits.find((hit) => hit.id === selected?.id) ?? hits[0];
+          }
+          updateResults();
+        }
+
+        if (quickHits.length >= 10) {
+          loadingPersonSearch = false;
+          updateResults();
+          void refineSearchWithImdb(combined, trimmed).then((refined) => {
+            if (generation !== searchGeneration) return;
+            if (searchInput.value.trim() !== trimmed) return;
+            hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+            updateResults();
+          });
+          return;
+        }
+
+        const personHits = await searchPersonHits(trimmed);
+        if (generation !== searchGeneration) return;
+        if (searchInput.value.trim() !== trimmed) return;
+        loadingPersonSearch = false;
+        const previousSelected = selected?.id;
+        combined = mergeSearchResults(titleHits, personHits, trimmed);
+        hits = prioritizeNowPlaying(combined, nowPlayingIDs);
+        if (!isMobileLayout()) {
+          selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
+        }
         updateResults();
-      });
-    }).catch(() => {
-      if (generation !== searchGeneration) return;
-      loadingPersonSearch = false;
-      updateResults();
-    });
+        if (!isMobileLayout() && selected && selected.id !== previousSelected) {
+          void loadSelected();
+        }
+
+        void refineSearchWithImdb(combined, trimmed).then((refined) => {
+          if (generation !== searchGeneration) return;
+          if (searchInput.value.trim() !== trimmed) return;
+          hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+          updateResults();
+        });
+      } catch {
+        if (generation !== searchGeneration) return;
+        loadingPersonSearch = false;
+        updateResults();
+      }
+    })();
   } catch (err) {
     if (generation !== searchGeneration) return;
     error = err instanceof Error ? err.message : "검색에 실패했습니다.";

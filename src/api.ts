@@ -49,6 +49,7 @@ interface PersonSearchItem {
   name?: string;
   original_name?: string;
   popularity?: number;
+  known_for?: CreditItem[];
 }
 
 interface CreditItem extends SearchItem {
@@ -57,7 +58,6 @@ interface CreditItem extends SearchItem {
 }
 
 const PERSON_MATCH_MIN = 60;
-const MAX_PERSON_LOOKUPS = 2;
 const DIRECTOR_JOBS = new Set(["Director", "Creator", "Co-Director"]);
 const PERSON_QUERY_ALIASES: Record<string, string[]> = {
   iu: ["아이유"],
@@ -65,11 +65,17 @@ const PERSON_QUERY_ALIASES: Record<string, string[]> = {
 const STAGE_NAME_PERSON_IDS: Record<string, number> = {
   iu: 1299479,
 };
+const PERSON_FILMOGRAPHY_LIMIT = 24;
+const PERSON_CACHE_TTL_MS = 30 * 60 * 1000;
+const personFilmographyCache = new Map<string, { hits: SearchHit[]; expires: number }>();
 
 function personSearchQueries(query: string): string[] {
   const variants = searchVariants(query);
   const aliases = (PERSON_QUERY_ALIASES[compact(query)] ?? []).filter(containsHangul);
-  return [...new Set([...variants, ...aliases])];
+  const primary = variants[0] ?? query.trim();
+  const merged = [primary];
+  if (aliases[0] && !merged.includes(aliases[0])) merged.push(aliases[0]);
+  return merged.slice(0, 2);
 }
 
 function personMatchQueries(query: string): string[] {
@@ -132,6 +138,7 @@ interface PersonCandidate {
   id: number;
   names: string[];
   popularity: number;
+  knownFor: CreditItem[];
 }
 
 function addPersonName(row: PersonCandidate, name?: string): void {
@@ -140,29 +147,24 @@ function addPersonName(row: PersonCandidate, name?: string): void {
 }
 
 function addPersonNames(map: Map<number, PersonCandidate>, person: PersonSearchItem): void {
-  const row = map.get(person.id) ?? { id: person.id, names: [], popularity: 0 };
+  const row = map.get(person.id) ?? { id: person.id, names: [], popularity: 0, knownFor: [] };
   row.popularity = Math.max(row.popularity, person.popularity ?? 0);
   addPersonName(row, person.name);
   addPersonName(row, person.original_name);
+  if ((person.known_for?.length ?? 0) > row.knownFor.length) {
+    row.knownFor = person.known_for ?? [];
+  }
   map.set(person.id, row);
 }
 
 async function enrichPersonCandidates(people: PersonCandidate[]): Promise<void> {
   if (!people.length) return;
-  for (let index = 0; index < people.length; index += 3) {
-    const batch = people.slice(index, index + 3);
-    const details = await Promise.all(
-      batch.map((person) => Promise.all([
-        tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${person.id}`, { language: "ko-KR" }),
-        tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${person.id}`, { language: "en-US" }),
-      ])),
-    );
-    for (let batchIndex = 0; batchIndex < batch.length; batchIndex++) {
-      for (const detail of details[batchIndex]) {
-        addPersonName(batch[batchIndex], detail.name);
-        for (const aka of detail.also_known_as ?? []) addPersonName(batch[batchIndex], aka);
-      }
-    }
+  const details = await Promise.all(
+    people.map((person) => tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${person.id}`, { language: "ko-KR" })),
+  );
+  for (let index = 0; index < people.length; index++) {
+    addPersonName(people[index], details[index].name);
+    for (const aka of details[index].also_known_as ?? []) addPersonName(people[index], aka);
   }
 }
 
@@ -170,11 +172,12 @@ function personMatchScore(names: string[], queries: string[]): number {
   return Math.max(0, ...queries.map((item) => relevance(names, item)));
 }
 
-async function searchPersonPages(queries: string[]): Promise<PersonSearchItem[]> {
-  const tasks = queries.flatMap((item) => [
-    tmdb<{ results: PersonSearchItem[] }>("/search/person", { query: item, language: "ko-KR", include_adult: "false", page: "1" }),
-    tmdb<{ results: PersonSearchItem[] }>("/search/person", { query: item, language: "en-US", include_adult: "false", page: "1" }),
-  ]);
+async function searchPersonPages(queries: string[], languages: string[]): Promise<PersonSearchItem[]> {
+  const tasks = queries.flatMap((item) =>
+    languages.map((language) =>
+      tmdb<{ results: PersonSearchItem[] }>("/search/person", { query: item, language, include_adult: "false", page: "1" }),
+    ),
+  );
   const pages = await Promise.allSettled(tasks);
   const people: PersonSearchItem[] = [];
   for (const page of pages) {
@@ -184,38 +187,33 @@ async function searchPersonPages(queries: string[]): Promise<PersonSearchItem[]>
   return people;
 }
 
-async function seedKnownPerson(peopleByID: Map<number, PersonCandidate>, query: string): Promise<void> {
-  const id = STAGE_NAME_PERSON_IDS[compact(query)];
-  if (!id) return;
+function finalizePersonHits(hits: SearchHit[]): SearchHit[] {
+  return hits.sort((a, b) => b.voteCount - a.voteCount).slice(0, PERSON_FILMOGRAPHY_LIMIT);
+}
 
-  const existing = peopleByID.get(id);
-  if (existing && existing.names.length >= 2) return;
-
-  try {
-    const [ko, en] = await Promise.all([
-      tmdb<{ name?: string; also_known_as?: string[]; popularity?: number }>(`/person/${id}`, { language: "ko-KR" }),
-      tmdb<{ name?: string; also_known_as?: string[]; popularity?: number }>(`/person/${id}`, { language: "en-US" }),
-    ]);
-    const row = peopleByID.get(id) ?? { id, names: [], popularity: 0 };
-    row.popularity = Math.max(row.popularity, ko.popularity ?? 0, en.popularity ?? 0, 100);
-    addPersonName(row, ko.name);
-    addPersonName(row, en.name);
-    for (const aka of [...(ko.also_known_as ?? []), ...(en.also_known_as ?? [])]) addPersonName(row, aka);
-    peopleByID.set(id, row);
-  } catch {
-    // optional seed
-  }
+async function fetchPersonFilmographyByID(personID: number): Promise<SearchHit[]> {
+  const [detail, credits] = await Promise.all([
+    tmdb<{ name?: string; also_known_as?: string[] }>(`/person/${personID}`, { language: "ko-KR" }),
+    tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${personID}/combined_credits`, { language: "ko-KR" }),
+  ]);
+  const person: PersonCandidate = { id: personID, names: [], popularity: 100, knownFor: [] };
+  addPersonName(person, detail.name);
+  for (const aka of detail.also_known_as ?? []) addPersonName(person, aka);
+  const personName = pickKorean(person.names) || person.names[0] || "";
+  const extras = { matchedPerson: personName, matchedPersonNames: person.names };
+  const hits: SearchHit[] = [];
+  const seen = new Set<string>();
+  appendPersonCredits(hits, seen, { combined: credits, tv: {} }, extras);
+  return finalizePersonHits(hits);
 }
 
 async function fetchPersonCredits(personID: number): Promise<{ combined: { cast?: CreditItem[]; crew?: CreditItem[] }; tv: { cast?: CreditItem[] } }> {
-  const [combined, tv] = await Promise.allSettled([
-    tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${personID}/combined_credits`, { language: "ko-KR" }),
-    tmdb<{ cast?: CreditItem[] }>(`/person/${personID}/tv_credits`, { language: "ko-KR" }),
-  ]);
-  return {
-    combined: combined.status === "fulfilled" ? combined.value : {},
-    tv: tv.status === "fulfilled" ? tv.value : {},
-  };
+  try {
+    const combined = await tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${personID}/combined_credits`, { language: "ko-KR" });
+    return { combined, tv: {} };
+  } catch {
+    return { combined: {}, tv: {} };
+  }
 }
 
 function appendPersonCredits(
@@ -247,46 +245,109 @@ function appendPersonCredits(
   }
 }
 
+async function pickMatchedPerson(query: string): Promise<PersonCandidate | undefined> {
+  const matchQueries = personMatchQueries(query);
+  const languages = containsHangul(query) ? ["ko-KR"] : ["en-US"];
+  const peopleByID = new Map<number, PersonCandidate>();
+  for (const person of await searchPersonPages(personSearchQueries(query), languages)) {
+    addPersonNames(peopleByID, person);
+  }
+  if (!peopleByID.size) return undefined;
+
+  const minScore = personMatchMinForQueries(matchQueries);
+  const matched = [...peopleByID.values()]
+    .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
+    .filter((row) => row.score >= minScore)
+    .sort((a, b) => b.score - a.score || b.person.popularity - a.person.popularity)[0];
+  return matched?.person;
+}
+
+function personHitsFromCredits(
+  person: PersonCandidate,
+  credits: { combined: { cast?: CreditItem[]; crew?: CreditItem[] }; tv: { cast?: CreditItem[] } },
+): SearchHit[] {
+  const personName = pickKorean(person.names) || person.names[0] || "";
+  const extras = { matchedPerson: personName, matchedPersonNames: person.names };
+  const hits: SearchHit[] = [];
+  const seen = new Set<string>();
+  appendPersonCredits(hits, seen, credits, extras);
+  return finalizePersonHits(hits);
+}
+
+export async function searchPersonKnownHits(query: string): Promise<SearchHit[]> {
+  const cacheKey = compact(query) || query.trim().toLowerCase();
+  const cached = personFilmographyCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.hits;
+
+  try {
+    const knownID = STAGE_NAME_PERSON_IDS[cacheKey];
+    if (knownID) {
+      const hits = await fetchPersonFilmographyByID(knownID);
+      personFilmographyCache.set(cacheKey, { hits, expires: Date.now() + PERSON_CACHE_TTL_MS });
+      return hits;
+    }
+
+    const person = await pickMatchedPerson(query);
+    if (!person || person.knownFor.length < 4) return [];
+    return personHitsFromCredits(person, { combined: { cast: person.knownFor }, tv: {} });
+  } catch {
+    return [];
+  }
+}
+
 async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
-  const searchQueries = personSearchQueries(query);
+  const cacheKey = compact(query) || query.trim().toLowerCase();
+  const cached = personFilmographyCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.hits;
+
   const rankQueries = personRankQueries(query);
   const matchQueries = personMatchQueries(query);
 
   try {
+    const knownID = STAGE_NAME_PERSON_IDS[cacheKey];
+    if (knownID) {
+      const hits = await fetchPersonFilmographyByID(knownID);
+      personFilmographyCache.set(cacheKey, { hits, expires: Date.now() + PERSON_CACHE_TTL_MS });
+      return hits;
+    }
+
+    const languages = containsHangul(query) ? ["ko-KR"] : ["en-US"];
     const peopleByID = new Map<number, PersonCandidate>();
-    for (const person of await searchPersonPages(searchQueries)) addPersonNames(peopleByID, person);
-    await seedKnownPerson(peopleByID, query);
+    for (const person of await searchPersonPages(personSearchQueries(query), languages)) {
+      addPersonNames(peopleByID, person);
+    }
     if (!peopleByID.size) return [];
 
-    const prelimScore = (person: PersonCandidate) => personMatchScore(person.names, rankQueries);
-    const candidates = [...peopleByID.values()]
-      .sort((a, b) => prelimScore(b) - prelimScore(a) || b.popularity - a.popularity)
-      .slice(0, 6);
-    await enrichPersonCandidates(candidates);
-
     const minScore = personMatchMinForQueries(matchQueries);
-    const lookupLimit = compact(query).length <= 4 ? 2 : MAX_PERSON_LOOKUPS;
-    const matched = candidates
+    const matched = [...peopleByID.values()]
       .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
       .filter((row) => row.score >= minScore)
       .sort((a, b) => b.score - a.score || b.person.popularity - a.person.popularity)
-      .slice(0, lookupLimit);
+      .slice(0, 1);
 
     if (!matched.length) return [];
 
-    const seen = new Set<string>();
-    const hits: SearchHit[] = [];
+    const { person } = matched[0];
+    if (personMatchScore(person.names, rankQueries) < 80) {
+      await enrichPersonCandidates([person]);
+    }
 
-    for (const { person } of matched) {
-      const personName = pickKorean(person.names) || person.names[0] || "";
-      const extras = {
-        matchedPerson: personName,
-        matchedPersonNames: person.names,
-      };
+    const personName = pickKorean(person.names) || person.names[0] || "";
+    const extras = { matchedPerson: personName, matchedPersonNames: person.names };
+    const hits: SearchHit[] = [];
+    const seen = new Set<string>();
+
+    if (person.knownFor.length >= 4) {
+      appendPersonCredits(hits, seen, { combined: { cast: person.knownFor }, tv: {} }, extras);
+    }
+
+    if (hits.length < 8) {
       appendPersonCredits(hits, seen, await fetchPersonCredits(person.id), extras);
     }
 
-    return hits.sort((a, b) => b.voteCount - a.voteCount);
+    const finalHits = finalizePersonHits(hits);
+    personFilmographyCache.set(cacheKey, { hits: finalHits, expires: Date.now() + PERSON_CACHE_TTL_MS });
+    return finalHits;
   } catch {
     return [];
   }
@@ -591,9 +652,7 @@ export async function searchTitleHits(query: string): Promise<SearchHit[]> {
 }
 
 export async function searchPersonHits(query: string): Promise<SearchHit[]> {
-  const hits = await searchPersonFilmography(query);
-  if (!hits.length) return hits;
-  return localizeHitTitles(hits);
+  return searchPersonFilmography(query);
 }
 
 export function mergeSearchResults(titleHits: SearchHit[], personHits: SearchHit[], query: string): SearchHit[] {
