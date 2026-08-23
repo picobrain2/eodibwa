@@ -54,43 +54,9 @@ const TMDB_DISCOVER_PROVIDERS = new Set([1883, 356, 97, 1881]);
 /** Skip strict KR-origin filter — catalog includes global/licensed titles. */
 const RELAXED_ORIGIN_PROVIDERS = new Set([1881]);
 
-/** Lower = preferred owner when a title is on multiple OTTs (global platforms win over aggregators). */
-const PROVIDER_PRIORITY: Record<number, number> = {
-  8: 1,
-  337: 2,
-  119: 3,
-  350: 4,
-  384: 5,
-  531: 6,
-  84: 7,
-  39: 8,
-  1883: 50,
-  356: 51,
-  97: 52,
-  1881: 53,
-};
-
-function providerPriority(id: number): number {
-  return PROVIDER_PRIORITY[id] ?? 999;
-}
-
-function pickExclusiveProvider(providerIDs: number[], tracked: Set<number>): number | undefined {
-  let best: number | undefined;
-  let bestPriority = Infinity;
-  for (const id of providerIDs) {
-    if (!tracked.has(id)) continue;
-    const priority = providerPriority(id);
-    if (priority < bestPriority) {
-      bestPriority = priority;
-      best = id;
-    }
-  }
-  return best;
-}
-
 const CATALOG_TTL_MS = 60 * 60 * 1000;
 const CHART_TTL_MS = 30 * 60 * 1000;
-const CHART_SIZE = 36;
+const CHART_SIZE = 20;
 const BATCH_SIZE = 6;
 const DISPLAY_LIMIT = 8;
 const CANDIDATE_LIMIT = 24;
@@ -193,6 +159,8 @@ interface DiscoverRow {
 }
 
 const discoverCache = new Map<string, { hits: SearchHit[]; expires: number }>();
+const providerIdCache = new Map<string, { ids: number[]; expires: number }>();
+const PROVIDER_ID_TTL_MS = 60 * 60 * 1000;
 
 async function tmdb<T>(path: string, query: Record<string, string> = {}): Promise<T> {
   const key = settings.tmdb;
@@ -234,6 +202,18 @@ function toHit(item: MediaItem, kind: MediaKind, english?: MediaItem, provider?:
   };
 }
 
+function mergeUniqueHits(existing: SearchHit[], extra: SearchHit[], limit = DISPLAY_LIMIT): SearchHit[] {
+  const seen = new Set(existing.map((hit) => hit.id));
+  const out = [...existing];
+  for (const hit of extra) {
+    if (seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    out.push(hit);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 function matchesGenre(genreIDs: number[], kind: MediaKind, genre?: RecommendGenre): boolean {
   if (!genre) return true;
   const target = kind === "movie" ? genre.movieID : genre.tvID;
@@ -248,6 +228,7 @@ export function recentPopularRange(): { gte: string; lte: string } {
 export function invalidateRecommendChart(): void {
   chartCache = undefined;
   discoverCache.clear();
+  providerIdCache.clear();
   invalidateMotnCache();
 }
 
@@ -310,6 +291,10 @@ async function fetchCombinedTrending(limit = CHART_SIZE): Promise<TrendingRow[]>
 }
 
 async function fetchProviderIDs(kind: MediaKind, id: number, region: string): Promise<number[]> {
+  const cacheKey = `${kind}-${id}-${region}`;
+  const cached = providerIdCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) return cached.ids;
+
   const data = await tmdb<{
     results?: Record<string, {
       flatrate?: ProviderDTO[];
@@ -319,13 +304,18 @@ async function fetchProviderIDs(kind: MediaKind, id: number, region: string): Pr
   }>(`/${kind}/${id}/watch/providers`, { watch_region: region });
 
   const country = data.results?.[region];
-  if (!country) return [];
+  if (!country) {
+    providerIdCache.set(cacheKey, { ids: [], expires: Date.now() + PROVIDER_ID_TTL_MS });
+    return [];
+  }
 
   const ids = new Set<number>();
   for (const list of [country.flatrate, country.free, country.ads]) {
     for (const provider of list ?? []) ids.add(provider.provider_id);
   }
-  return [...ids];
+  const result = [...ids];
+  providerIdCache.set(cacheKey, { ids: result, expires: Date.now() + PROVIDER_ID_TTL_MS });
+  return result;
 }
 
 async function mapInBatches<T, R>(items: T[], size: number, fn: (item: T) => Promise<R>): Promise<R[]> {
@@ -511,7 +501,9 @@ async function fetchGenreMedia(
   region: string,
   providerID: number,
   genre: RecommendGenre,
+  options?: { pages?: number; relaxOrigin?: boolean; relaxVarietyDates?: boolean },
 ): Promise<DiscoverRow[]> {
+  const pages = options?.pages ?? 3;
   const query: Record<string, string> = {
     language: "ko-KR",
     watch_region: region,
@@ -520,7 +512,9 @@ async function fetchGenreMedia(
     sort_by: "popularity.desc",
     page: "1",
   };
-  if (region === "KR" && !RELAXED_ORIGIN_PROVIDERS.has(providerID)) query.with_origin_country = "KR";
+  if (region === "KR" && !RELAXED_ORIGIN_PROVIDERS.has(providerID) && !options?.relaxOrigin) {
+    query.with_origin_country = "KR";
+  }
 
   const kinds: MediaKind[] = [
     ...(genre.movieID ? (["movie"] as MediaKind[]) : []),
@@ -530,12 +524,55 @@ async function fetchGenreMedia(
     const genreID = kind === "movie" ? genre.movieID : genre.tvID;
     if (!genreID) return [] as DiscoverRow[];
     const kindQuery = { ...query, with_genres: String(genreID) };
-    if (kind === "tv" && genreID === TV_GENRE_REALITY) applyVarietyOnAirFilter(kindQuery);
-    const { ko, en } = await fetchDiscoverPages(kind, kindQuery, 1);
+    if (kind === "tv" && genreID === TV_GENRE_REALITY && !options?.relaxVarietyDates) {
+      applyVarietyOnAirFilter(kindQuery);
+    }
+    const { ko, en } = await fetchDiscoverPages(kind, kindQuery, pages);
     return rowsFromDiscover(ko, en, kind);
   }));
 
   return rows.flat();
+}
+
+async function topUpGenreHits(
+  hits: SearchHit[],
+  region: string,
+  providerID: number,
+  provider: { id: number; name: string; logo?: string },
+  genre: RecommendGenre,
+  entries: ChartEntry[],
+  catalog: Map<number, { name: string; logo?: string }>,
+): Promise<SearchHit[]> {
+  if (hits.length >= DISPLAY_LIMIT) return hits.slice(0, DISPLAY_LIMIT);
+
+  const seen = new Set(hits.map((hit) => hit.id));
+  let result = [...hits];
+
+  const appendRows = (rows: DiscoverRow[], sort: "votes" | "popularity" | "preserve" = "votes") => {
+    result = mergeUniqueHits(result, rowsToHits(rows, provider, seen, DISPLAY_LIMIT - result.length, sort), DISPLAY_LIMIT);
+  };
+
+  appendRows(await fetchGenreMedia(region, providerID, genre, { pages: 4, relaxOrigin: true }));
+
+  if (result.length < DISPLAY_LIMIT && genre.tvID === TV_GENRE_REALITY) {
+    appendRows(
+      await fetchGenreMedia(region, providerID, genre, { pages: 4, relaxOrigin: true, relaxVarietyDates: true }),
+      "popularity",
+    );
+  }
+
+  if (result.length < DISPLAY_LIMIT && RELAXED_ORIGIN_PROVIDERS.has(providerID)) {
+    appendRows(
+      await fetchRelaxedProviderMedia(region, providerID, genre),
+      genre.tvID === TV_GENRE_REALITY ? "popularity" : "preserve",
+    );
+  }
+
+  if (result.length < DISPLAY_LIMIT) {
+    result = mergeUniqueHits(result, projectSingleProvider(entries, catalog, genre, providerID, DISPLAY_LIMIT), DISPLAY_LIMIT);
+  }
+
+  return result.slice(0, DISPLAY_LIMIT);
 }
 
 async function fetchTvingVarietyMedia(): Promise<DiscoverRow[]> {
@@ -628,7 +665,7 @@ async function fetchDiscoverSupplement(
   }
 
   if (genre && (genre.tvID || genre.movieID) && !(genre.tvID && genre.movieID)) {
-    const rows = await fetchGenreMedia(region, providerID, genre);
+    let rows = await fetchGenreMedia(region, providerID, genre);
     for (const hit of rowsToHits(
       rows,
       provider,
@@ -638,6 +675,26 @@ async function fetchDiscoverSupplement(
     )) {
       hits.push(hit);
       if (hits.length >= limit) return hits;
+    }
+    if (hits.length < limit) {
+      rows = await fetchGenreMedia(region, providerID, genre, { pages: 4, relaxOrigin: true });
+      for (const hit of rowsToHits(
+        rows,
+        provider,
+        seen,
+        limit - hits.length,
+        genre.tvID === TV_GENRE_REALITY ? "popularity" : "votes",
+      )) {
+        hits.push(hit);
+        if (hits.length >= limit) return hits;
+      }
+    }
+    if (hits.length < limit && genre.tvID === TV_GENRE_REALITY) {
+      rows = await fetchGenreMedia(region, providerID, genre, { pages: 4, relaxOrigin: true, relaxVarietyDates: true });
+      for (const hit of rowsToHits(rows, provider, seen, limit - hits.length, "popularity")) {
+        hits.push(hit);
+        if (hits.length >= limit) return hits;
+      }
     }
     return hits;
   }
@@ -699,7 +756,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v8`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v9`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 
@@ -722,79 +779,89 @@ async function fetchProviderPopularHits(
 
 async function dedupeExclusiveProviders(
   providers: RecommendProvider[],
-  region: string,
-  entries: ChartEntry[],
+  _region: string,
+  _entries: ChartEntry[],
 ): Promise<RecommendProvider[]> {
-  const tracked = new Set(PROVIDER_IDS[region] ?? PROVIDER_IDS.KR);
-  const entryByHitId = new Map(entries.map((entry) => [entry.hit.id, entry]));
-  const providerCache = new Map<string, number[]>();
-
-  const uniqueHits = new Map<string, SearchHit>();
-  for (const group of providers) {
-    for (const hit of group.hits) uniqueHits.set(hit.id, hit);
-  }
-
-  await mapInBatches([...uniqueHits.values()], BATCH_SIZE, async (hit) => {
-    const fromChart = entryByHitId.get(hit.id);
-    if (fromChart) {
-      providerCache.set(hit.id, [...fromChart.providerIDs]);
-      return;
-    }
-    providerCache.set(hit.id, await fetchProviderIDs(hit.kind, hit.tmdbID, region));
-  });
-
-  const owner = new Map<string, number>();
-  for (const [hitId, hit] of uniqueHits) {
-    let winner = pickExclusiveProvider(providerCache.get(hitId) ?? [], tracked);
-    if (winner === undefined && hit.providerID !== undefined && tracked.has(hit.providerID)) {
-      winner = hit.providerID;
-    }
-    if (winner !== undefined) owner.set(hitId, winner);
-  }
-
   return providers.map((group) => ({
     ...group,
-    hits: group.hits.filter((hit) => owner.get(hit.id) === group.id).slice(0, DISPLAY_LIMIT),
+    hits: group.hits.slice(0, DISPLAY_LIMIT),
   }));
 }
 
-export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
+export async function fetchOneProviderRecommendation(
+  region: string,
+  providerID: number,
+  genreID = 0,
+  preloaded?: { entries: ChartEntry[]; catalog: Map<number, { name: string; logo?: string }> },
+): Promise<RecommendProvider | null> {
   const genre = genreID === 0 ? undefined : RECOMMEND_GENRES.find((item) => item.id === genreID);
+  const catalog = preloaded?.catalog ?? await providerCatalog(region);
+  const meta = catalog.get(providerID) ?? { name: `Provider ${providerID}` };
+  const provider = { id: providerID, name: meta.name, logo: meta.logo };
+
+  let hits: SearchHit[] = [];
+  const motnService = settings.hasMOTN && (await prefetchMotnRegion(region))
+    ? MOTN_TMDB_PROVIDER[providerID]
+    : undefined;
+
+  if (motnService) {
+    try {
+      hits = await fetchMotnProviderHits(region, motnService, provider, genre, CANDIDATE_LIMIT);
+      if (hits.length && !genre) {
+        return { id: providerID, name: meta.name, logo: meta.logo, hits: hits.slice(0, DISPLAY_LIMIT) };
+      }
+    } catch {
+      hits = [];
+    }
+  }
+
+  const needsChart = !TMDB_DISCOVER_PROVIDERS.has(providerID) || !motnService || Boolean(genre);
+  const entries = preloaded?.entries ?? (needsChart ? await buildTrendingChart(region) : []);
+
+  if (TMDB_DISCOVER_PROVIDERS.has(providerID)) {
+    const tmdbHits = await fetchProviderPopularHits(region, providerID, provider, genre, entries, catalog);
+    hits = mergeUniqueHits(hits, tmdbHits, genre ? DISPLAY_LIMIT : CANDIDATE_LIMIT);
+  } else if (needsChart) {
+    hits = mergeUniqueHits(
+      hits,
+      projectSingleProvider(entries, catalog, genre, providerID, CANDIDATE_LIMIT),
+      genre ? DISPLAY_LIMIT : CANDIDATE_LIMIT,
+    );
+  }
+
+  if (genre && hits.length < DISPLAY_LIMIT) {
+    hits = await topUpGenreHits(hits, region, providerID, provider, genre, entries, catalog);
+  }
+
+  if (!hits.length) return null;
+  return { id: providerID, name: meta.name, logo: meta.logo, hits: hits.slice(0, DISPLAY_LIMIT) };
+}
+
+export async function refreshProviderGroup(
+  region: string,
+  providerID: number,
+  genreID: number,
+  current: RecommendProvider[],
+): Promise<RecommendProvider[]> {
+  const [entries, catalog] = await Promise.all([buildTrendingChart(region), providerCatalog(region)]);
+  const group = await fetchOneProviderRecommendation(region, providerID, genreID, { entries, catalog });
+  const merged = current
+    .map((item) => (item.id === providerID ? group : item))
+    .filter((item): item is RecommendProvider => item !== null);
+  return dedupeExclusiveProviders(merged, region, entries);
+}
+
+export async function fetchProviderRecommendations(region: string, genreID = 0): Promise<RecommendProvider[]> {
   const catalog = await providerCatalog(region);
   const ids = PROVIDER_IDS[region] ?? PROVIDER_IDS.KR;
-
-  const needsTmdb = ids.some((id) => !settings.hasMOTN || !MOTN_TMDB_PROVIDER[id]);
-  const motnReady = settings.hasMOTN ? await prefetchMotnRegion(region) : false;
-  const entries = needsTmdb ? await buildTrendingChart(region) : [];
+  const needsChart = genreID !== 0 || ids.some((id) => !settings.hasMOTN || !MOTN_TMDB_PROVIDER[id]);
+  const entries = needsChart ? await buildTrendingChart(region) : [];
+  const preloaded = { entries, catalog };
 
   const rows = await Promise.all(
-    ids.map(async (id) => {
-      const meta = catalog.get(id) ?? { name: `Provider ${id}` };
-      const provider = { id, name: meta.name, logo: meta.logo };
-      const motnService = motnReady ? MOTN_TMDB_PROVIDER[id] : undefined;
-
-      if (motnService) {
-        try {
-          const hits = await fetchMotnProviderHits(region, motnService, provider, genre, CANDIDATE_LIMIT);
-          if (hits.length) return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
-        } catch {
-          // fall back to TMDB for this provider
-        }
-      }
-
-      if (TMDB_DISCOVER_PROVIDERS.has(id)) {
-        const hits = await fetchProviderPopularHits(region, id, provider, genre, entries, catalog);
-        return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
-      }
-
-      const hits = projectSingleProvider(entries, catalog, genre, id, CANDIDATE_LIMIT);
-      if (!hits.length) return null;
-      return { id, name: meta.name, logo: meta.logo, hits } as RecommendProvider;
-    }),
+    ids.map((id) => fetchOneProviderRecommendation(region, id, genreID, preloaded)),
   );
-
-  const filtered = rows.filter((row): row is RecommendProvider => row !== null);
-  return dedupeExclusiveProviders(filtered, region, entries);
+  return dedupeExclusiveProviders(rows.filter((row): row is RecommendProvider => row !== null), region, entries);
 }
 
 export async function loadRecommendations(region: string, genreID = 0): Promise<{ trending: SearchHit[]; providers: RecommendProvider[] }> {

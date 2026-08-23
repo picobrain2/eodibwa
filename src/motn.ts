@@ -246,7 +246,9 @@ export async function fetchMotnProviderHits(
     .slice(0, limit)
     .map((show) => motnShowToHit(show, provider))
     .filter((hit): hit is SearchHit => Boolean(hit));
-  return localizeHitTitles(hits);
+  const localized = await localizeHitTitles(hits.slice(0, 8));
+  const localizedByID = new Map(localized.map((hit) => [hit.id, hit]));
+  return hits.map((hit) => localizedByID.get(hit.id) ?? hit);
 }
 
 export async function prefetchMotnRegion(region: string): Promise<boolean> {

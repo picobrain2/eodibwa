@@ -1,6 +1,6 @@
-import { fetchDetail, fetchPopularReviews, providerLink, refineSearchWithImdb, searchTitles, watchaSearchURL } from "./api";
+import { fetchDetail, enrichDetail, fetchPopularReviews, providerLink, refineSearchWithImdb, searchTitles, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
-import { loadRecommendations as fetchRecommendations, fetchProviderRecommendations, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
+import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { containsHangul } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
@@ -28,6 +28,7 @@ let recommendLoaded = false;
 let nowPlayingIDs = new Set<number>();
 let providerRecommendGeneration = 0;
 let recommendError = "";
+let recommendLoadScheduled = false;
 let showRecommendPage = false;
 let showDetailPage = false;
 let suppressHistory = false;
@@ -82,7 +83,7 @@ function pushMobileView(view: MobileView): void {
 
 function openRecommendPage(): void {
   showRecommendPage = true;
-  if (!recommendLoaded && !loadingRecommend) void loadRecommendations();
+  ensureRecommendationsLoaded();
   pushMobileView("recommend");
   updateRecommendPage();
 }
@@ -197,6 +198,12 @@ function activeProviderName(): string {
   return providerTabOptions().find((item) => item.id === selectedProviderID)?.name ?? "OTT";
 }
 
+function ensureRecommendationsLoaded(): void {
+  if (recommendLoaded || loadingRecommend || recommendLoadScheduled || !settings.hasTMDB) return;
+  recommendLoadScheduled = true;
+  void loadRecommendations();
+}
+
 function visibleRecommendProviders(): RecommendProvider[] {
   const match = recommendProviders.filter((group) => group.id === selectedProviderID);
   if (match.length) return match;
@@ -264,7 +271,7 @@ function hitButton(hit: SearchHit, selectedId?: string): string {
   const theater = isInTheaters(hit) ? theaterBadgeHTML() : "";
   return `
     <button class="hit ${selectedId === hit.id ? "selected" : ""}" data-id="${hit.id}">
-      <img alt="" src="${posterURL(hit.posterPath) ?? ""}" />
+      <img alt="" src="${posterURL(hit.posterPath) ?? ""}" loading="lazy" decoding="async" />
       <span>
         <b>${escapeHTML(hit.titleKO || hit.titleEN)}${theater}</b>
         <small>${escapeHTML(meta)}</small>
@@ -488,6 +495,7 @@ function bindRecommendUI(root: ParentNode): void {
 function updateResults(): void {
   const list = filteredHits();
   const showRecommend = !query.trim() && !hits.length && !searching;
+  if (showRecommend) ensureRecommendationsLoaded();
   const mobile = isMobileLayout();
   resultsEl.innerHTML = `
     ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
@@ -607,7 +615,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
   const theaterBadge = d.kind === "movie" && d.inTheaters ? theaterBadgeHTML() : "";
   return `
     <div class="header">
-      <img class="poster" alt="" src="${posterURL(d.posterPath, "w500") ?? ""}" />
+      <img class="poster" alt="" src="${posterURL(d.posterPath, "w500") ?? ""}" loading="lazy" decoding="async" />
       <div>
         <h1>${escapeHTML(primary)}</h1>
         ${secondary ? `<p>${escapeHTML(secondary)}</p>` : ""}
@@ -644,7 +652,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
           <div class="providers">${providers.map((item) => {
             const href = providerLink(item.name, primary) ?? local.justWatchURL ?? "#";
             return `<a class="provider" href="${href}" target="_blank" rel="noreferrer">
-              <img class="logo" alt="" src="${posterURL(item.logoPath, "w92") ?? ""}" />
+              <img class="logo" alt="" src="${posterURL(item.logoPath, "w92") ?? ""}" loading="lazy" decoding="async" />
               <span>${escapeHTML(item.name)}</span>
             </a>`;
           }).join("")}</div>`;
@@ -653,7 +661,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
     ${d.overview ? `<section class="section"><h2>줄거리</h2><p>${escapeHTML(d.overview)}</p></section>` : ""}
     ${d.cast.length ? `<section class="section"><h2>출연</h2><div class="cast">${d.cast.map((person) => `
       <button type="button" class="person person-search" data-person-search="${escapeHTML(person.name)}">
-        <img class="face" alt="" src="${posterURL(person.profilePath) ?? ""}" />
+        <img class="face" alt="" src="${posterURL(person.profilePath) ?? ""}" loading="lazy" decoding="async" />
         <div>${escapeHTML(person.name)}</div>
         <small>${escapeHTML(person.role)}</small>
       </button>`).join("")}</div></section>` : ""}
@@ -797,14 +805,26 @@ async function loadSelected(): Promise<void> {
 
   loadingReviews = true;
   updateDetail();
+
+  const enrichTask = enrichDetail(detail).then(() => {
+    if (generation !== detailGeneration || !detail) return;
+    updateDetail();
+  });
+
+  const reviewsTask = (async () => {
+    try {
+      const reviews = await fetchPopularReviews(hit.kind, hit.tmdbID, detail!.titleKO, detail!.titleEN);
+      if (generation !== detailGeneration || !detail) return;
+      detail.popularReviews = await translateReviews(reviews);
+      if (generation !== detailGeneration || !detail) return;
+    } catch {
+      if (generation !== detailGeneration || !detail) return;
+      detail.popularReviews = detail.popularReviews ?? [];
+    }
+  })();
+
   try {
-    const reviews = await fetchPopularReviews(hit.kind, hit.tmdbID, detail.titleKO, detail.titleEN);
-    if (generation !== detailGeneration || !detail) return;
-    detail.popularReviews = await translateReviews(reviews);
-    if (generation !== detailGeneration || !detail) return;
-  } catch {
-    if (generation !== detailGeneration || !detail) return;
-    detail.popularReviews = detail.popularReviews ?? [];
+    await Promise.all([enrichTask, reviewsTask]);
   } finally {
     if (generation !== detailGeneration) return;
     loadingReviews = false;
@@ -845,28 +865,33 @@ export async function loadRecommendations(): Promise<void> {
     recommendError = err instanceof Error ? err.message : "OTT 추천을 불러오지 못했습니다.";
   } finally {
     loadingRecommend = false;
+    recommendLoadScheduled = false;
     updateResults();
     updateRecommendPage();
   }
 }
 
 async function reloadProviderRecommendations(): Promise<void> {
-  if (!settings.hasTMDB) return;
+  if (!settings.hasTMDB || !recommendLoaded) return;
   const generation = ++providerRecommendGeneration;
   loadingProviderRecommend = true;
   recommendError = "";
   updateResults();
   updateRecommendPage();
   try {
-    const providers = await fetchProviderRecommendations(settings.region, selectedGenreID);
+    const providers = await refreshProviderGroup(
+      settings.region,
+      selectedProviderID,
+      selectedGenreID,
+      recommendProviders,
+    );
     if (generation !== providerRecommendGeneration) return;
     recommendProviders = providers;
-    if (!providers.length) {
+    if (!visibleRecommendProviders()[0]?.hits.length) {
       recommendError = "이 장르에 해당하는 OTT 작품을 찾지 못했습니다.";
     }
   } catch (err) {
     if (generation !== providerRecommendGeneration) return;
-    recommendProviders = [];
     recommendError = err instanceof Error ? err.message : "OTT 추천을 불러오지 못했습니다.";
   } finally {
     if (generation !== providerRecommendGeneration) return;

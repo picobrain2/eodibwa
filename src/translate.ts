@@ -76,16 +76,11 @@ export async function translateEnToKo(text: string): Promise<string | undefined>
 }
 
 export async function translateReviews(reviews: PopularReview[]): Promise<PopularReview[]> {
-  const translated: PopularReview[] = [];
-  for (const review of reviews) {
-    if (containsHangul(review.content)) {
-      translated.push(review);
-      continue;
-    }
+  return Promise.all(reviews.map(async (review) => {
+    if (containsHangul(review.content)) return review;
     const translatedContent = await translateEnToKo(review.content);
-    translated.push(translatedContent ? { ...review, translatedContent } : review);
-  }
-  return translated;
+    return translatedContent ? { ...review, translatedContent } : review;
+  }));
 }
 
 export function reviewsNeedTranslation(reviews: PopularReview[]): boolean {

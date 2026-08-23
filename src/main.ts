@@ -1,5 +1,4 @@
 import "./style.css";
-import { loadRecommendations, render } from "./app";
+import { render } from "./app";
 
 render();
-void loadRecommendations();

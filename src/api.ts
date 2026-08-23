@@ -393,10 +393,7 @@ export async function localizeHitTitles(hits: SearchHit[]): Promise<SearchHit[]>
 
 export async function searchTitles(query: string): Promise<SearchHit[]> {
   const variants = searchVariants(query);
-  let [hits, personHits] = await Promise.all([
-    collect(variants),
-    searchPersonFilmography(variants),
-  ]);
+  let hits = await collect(variants);
 
   const strong = hits.some((hit) => isStrongMatch([hit.titleKO, hit.titleEN], query));
   if (!strong) {
@@ -407,7 +404,11 @@ export async function searchTitles(query: string): Promise<SearchHit[]> {
     }
   }
 
-  hits = mergeHits(hits, personHits);
+  const hasStrongTitle = hits.some((hit) => isStrongMatch([hit.titleKO, hit.titleEN], query));
+  if (!hasStrongTitle) {
+    const personHits = await searchPersonFilmography(variants);
+    hits = mergeHits(hits, personHits);
+  }
 
   return sortSearchHits(hits, query);
 }
@@ -494,7 +495,36 @@ function certification(kind: MediaKind, dto: DetailDTO): string | undefined {
   return row?.rating || undefined;
 }
 
+const detailCache = new Map<string, { detail: TitleDetail; expires: number }>();
+const DETAIL_TTL_MS = 30 * 60 * 1000;
+
+function detailCacheKey(kind: MediaKind, id: number): string {
+  return `${kind}-${id}`;
+}
+
+export async function enrichDetail(detail: TitleDetail): Promise<void> {
+  await Promise.all([
+    enrichOMDb(detail),
+    enrichTVMaze(detail),
+    enrichWikipedia(detail),
+  ]);
+
+  if (detail.kind === "movie") {
+    const playing = await loadNowPlaying(settings.region);
+    detail.inTheaters = playing.has(detail.tmdbID);
+  }
+
+  const cached = detailCache.get(detailCacheKey(detail.kind, detail.tmdbID));
+  if (cached) cached.detail = { ...detail };
+}
+
 export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
+  const cacheKey = detailCacheKey(kind, id);
+  const cached = detailCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    return { ...cached.detail, popularReviews: [...cached.detail.popularReviews] };
+  }
+
   const append = kind === "movie" ? "watch/providers,external_ids,credits,release_dates" : "watch/providers,external_ids,credits,content_ratings";
   const [ko, en] = await Promise.all([
     tmdb<DetailDTO>(`/${kind}/${id}`, { language: "ko-KR", append_to_response: append }),
@@ -541,18 +571,8 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
     popularReviews: [],
   };
 
-  await Promise.all([
-    enrichOMDb(detail),
-    enrichTVMaze(detail),
-    enrichWikipedia(detail),
-  ]);
-
-  if (kind === "movie") {
-    const playing = await loadNowPlaying(settings.region);
-    detail.inTheaters = playing.has(id);
-  }
-
-  return detail;
+  detailCache.set(cacheKey, { detail: { ...detail }, expires: Date.now() + DETAIL_TTL_MS });
+  return { ...detail };
 }
 
 export async function fetchPopularReviews(kind: MediaKind, id: number, _titleKO = "", _titleEN = ""): Promise<PopularReview[]> {
