@@ -219,7 +219,7 @@ function mergeUniqueHits(existing: SearchHit[], extra: SearchHit[], limit = DISP
 function matchesGenre(genreIDs: number[], kind: MediaKind, genre?: RecommendGenre): boolean {
   if (!genre) return true;
   const target = kind === "movie" ? genre.movieID : genre.tvID;
-  if (!target) return true;
+  if (!target) return false;
   return genreIDs.includes(target);
 }
 
@@ -758,7 +758,7 @@ async function fetchProviderPopularHits(
   catalog: Map<number, { name: string; logo?: string }>,
   limit = CANDIDATE_LIMIT,
 ): Promise<SearchHit[]> {
-  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v9`;
+  const cacheKey = `${region}-${providerID}-${genre?.id ?? 0}-v10`;
   const cached = discoverCache.get(cacheKey);
   if (cached && cached.expires > Date.now()) return cached.hits;
 

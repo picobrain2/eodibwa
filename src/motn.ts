@@ -26,6 +26,7 @@ const MOTN_GENRE_NAMES: Record<number, string> = {
   9: "Thriller",
   10: "Fantasy",
   11: "Crime",
+  12: "Reality",
 };
 
 interface MOTNGenre {
@@ -229,7 +230,7 @@ export function motnShowToHit(
 
 function matchesGenre(show: MOTNShow, genre: RecommendGenre): boolean {
   const label = MOTN_GENRE_NAMES[genre.id]?.toLowerCase();
-  if (!label) return true;
+  if (!label) return false;
   return (show.genres ?? []).some((item) => item.name.toLowerCase().includes(label));
 }
 
