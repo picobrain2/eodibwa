@@ -809,9 +809,15 @@ async function runSearch(raw: string): Promise<void> {
           combined = mergeSearchResults(titleHits, quickHits, trimmed);
           hits = prioritizeNowPlaying(combined, nowPlayingIDs);
           if (!isMobileLayout()) {
-            selected = hits.find((hit) => hit.id === selected?.id) ?? hits[0];
+            const previousSelected = selected?.id;
+            selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
+            updateResults();
+            if (selected && selected.id !== previousSelected) {
+              void loadSelected();
+            }
+          } else {
+            updateResults();
           }
-          updateResults();
         }
 
         if (quickHits.length >= 10) {

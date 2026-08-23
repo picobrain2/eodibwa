@@ -104,14 +104,21 @@ function yearOf(item: SearchItem): string | undefined {
   return date.length >= 4 ? date.slice(0, 4) : undefined;
 }
 
+function creditMediaKind(item: SearchItem): MediaKind | undefined {
+  if (item.media_type === "movie" || item.media_type === "tv") return item.media_type;
+  if (item.media_type) return undefined;
+  if (item.title || item.original_title) return "movie";
+  if (item.name || item.original_name) return "tv";
+  return undefined;
+}
+
 function toHit(
   item: SearchItem,
   english?: SearchItem,
   extras?: Pick<SearchHit, "matchedPerson" | "matchedPersonNames" | "matchedRole">,
 ): SearchHit | undefined {
-  let kind: MediaKind | undefined = item.media_type === "movie" || item.media_type === "tv" ? item.media_type : undefined;
-  if (!kind && item.name) kind = "tv";
-  if (!kind && (item.title || item.original_title)) kind = "movie";
+  if (!item.id) return undefined;
+  const kind = creditMediaKind(item);
   if (!kind) return undefined;
   const localized = item.title || item.name || "";
   const original = item.original_title || item.original_name || "";
