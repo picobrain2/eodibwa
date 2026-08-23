@@ -54,17 +54,28 @@ const PERSON_MATCH_MIN = 60;
 const MAX_PERSON_LOOKUPS = 2;
 const DIRECTOR_JOBS = new Set(["Director", "Creator", "Co-Director"]);
 const PERSON_QUERY_ALIASES: Record<string, string[]> = {
-  iu: ["아이유", "Lee Ji-eun", "이지은"],
+  iu: ["아이유"],
+};
+const STAGE_NAME_PERSON_IDS: Record<string, number> = {
+  iu: 1299479,
 };
 
 function personSearchQueries(query: string): string[] {
   const variants = searchVariants(query);
+  const aliases = (PERSON_QUERY_ALIASES[compact(query)] ?? []).filter(containsHangul);
+  return [...new Set([...variants, ...aliases])];
+}
+
+function personMatchQueries(query: string): string[] {
+  const trimmed = query.trim();
+  const variants = searchVariants(query);
   const aliases = PERSON_QUERY_ALIASES[compact(query)] ?? [];
-  const merged = [...variants];
-  for (const alias of aliases) {
-    if (!merged.includes(alias)) merged.push(alias);
-  }
-  return merged;
+  return [...new Set([trimmed, ...variants, ...aliases])];
+}
+
+function personRankQueries(query: string): string[] {
+  const trimmed = query.trim();
+  return [...new Set([trimmed, ...searchVariants(query)])];
 }
 
 function personMatchMin(query: string): number {
@@ -73,7 +84,7 @@ function personMatchMin(query: string): number {
 }
 
 function personMatchMinForQueries(queries: string[]): number {
-  return Math.min(...queries.map((query) => personMatchMin(query)));
+  return Math.min(...queries.map((item) => personMatchMin(item)));
 }
 
 function yearOf(item: SearchItem): string | undefined {
@@ -150,95 +161,141 @@ async function enrichPersonCandidates(people: PersonCandidate[]): Promise<void> 
 }
 
 function personMatchScore(names: string[], queries: string[]): number {
-  return Math.max(0, ...queries.map((query) => relevance(names, query)));
+  return Math.max(0, ...queries.map((item) => relevance(names, item)));
 }
 
-async function searchPersonFilmography(queries: string[]): Promise<SearchHit[]> {
-  try {
-    const pages = await Promise.all(
-      queries.flatMap((query) => [
-        tmdb<{ results: PersonSearchItem[] }>("/search/person", { query, language: "ko-KR", include_adult: "false", page: "1" }),
-        tmdb<{ results: PersonSearchItem[] }>("/search/person", { query, language: "en-US", include_adult: "false", page: "1" }),
-      ]),
-    );
+async function searchPersonPages(queries: string[]): Promise<PersonSearchItem[]> {
+  const tasks = queries.flatMap((item) => [
+    tmdb<{ results: PersonSearchItem[] }>("/search/person", { query: item, language: "ko-KR", include_adult: "false", page: "1" }),
+    tmdb<{ results: PersonSearchItem[] }>("/search/person", { query: item, language: "en-US", include_adult: "false", page: "1" }),
+  ]);
+  const pages = await Promise.allSettled(tasks);
+  const people: PersonSearchItem[] = [];
+  for (const page of pages) {
+    if (page.status !== "fulfilled") continue;
+    people.push(...page.value.results ?? []);
+  }
+  return people;
+}
 
+async function seedKnownPerson(peopleByID: Map<number, PersonCandidate>, query: string): Promise<void> {
+  const id = STAGE_NAME_PERSON_IDS[compact(query)];
+  if (!id) return;
+
+  const existing = peopleByID.get(id);
+  if (existing && existing.names.length >= 2) return;
+
+  try {
+    const [ko, en] = await Promise.all([
+      tmdb<{ name?: string; also_known_as?: string[]; popularity?: number }>(`/person/${id}`, { language: "ko-KR" }),
+      tmdb<{ name?: string; also_known_as?: string[]; popularity?: number }>(`/person/${id}`, { language: "en-US" }),
+    ]);
+    const row = peopleByID.get(id) ?? { id, names: [], popularity: 0 };
+    row.popularity = Math.max(row.popularity, ko.popularity ?? 0, en.popularity ?? 0, 100);
+    addPersonName(row, ko.name);
+    addPersonName(row, en.name);
+    for (const aka of [...(ko.also_known_as ?? []), ...(en.also_known_as ?? [])]) addPersonName(row, aka);
+    peopleByID.set(id, row);
+  } catch {
+    // optional seed
+  }
+}
+
+async function fetchPersonCredits(personID: number): Promise<{ combined: { cast?: CreditItem[]; crew?: CreditItem[] }; tv: { cast?: CreditItem[] } }> {
+  const [combined, tv] = await Promise.allSettled([
+    tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${personID}/combined_credits`, { language: "ko-KR" }),
+    tmdb<{ cast?: CreditItem[] }>(`/person/${personID}/tv_credits`, { language: "ko-KR" }),
+  ]);
+  return {
+    combined: combined.status === "fulfilled" ? combined.value : {},
+    tv: tv.status === "fulfilled" ? tv.value : {},
+  };
+}
+
+function appendPersonCredits(
+  hits: SearchHit[],
+  seen: Set<string>,
+  credits: { combined: { cast?: CreditItem[]; crew?: CreditItem[] }; tv: { cast?: CreditItem[] } },
+  extras: Pick<SearchHit, "matchedPerson" | "matchedPersonNames">,
+): void {
+  for (const item of credits.combined.cast ?? []) {
+    const hit = toHit(item, undefined, { ...extras, matchedRole: item.character?.trim() || "출연" });
+    if (!hit || seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    hits.push(hit);
+  }
+
+  for (const item of credits.tv.cast ?? []) {
+    const hit = toHit(item, undefined, { ...extras, matchedRole: item.character?.trim() || "출연" });
+    if (!hit || seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    hits.push(hit);
+  }
+
+  for (const item of credits.combined.crew ?? []) {
+    if (!item.job || !DIRECTOR_JOBS.has(item.job)) continue;
+    const hit = toHit(item, undefined, { ...extras, matchedRole: "감독" });
+    if (!hit || seen.has(hit.id)) continue;
+    seen.add(hit.id);
+    hits.push(hit);
+  }
+}
+
+async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
+  const searchQueries = personSearchQueries(query);
+  const rankQueries = personRankQueries(query);
+  const matchQueries = personMatchQueries(query);
+
+  try {
     const peopleByID = new Map<number, PersonCandidate>();
-    for (const page of pages) {
-      for (const person of page.results ?? []) addPersonNames(peopleByID, person);
-    }
+    for (const person of await searchPersonPages(searchQueries)) addPersonNames(peopleByID, person);
+    await seedKnownPerson(peopleByID, query);
     if (!peopleByID.size) return [];
 
-    const prelimScore = (person: PersonCandidate) => personMatchScore(person.names, queries);
+    const prelimScore = (person: PersonCandidate) => personMatchScore(person.names, rankQueries);
     const candidates = [...peopleByID.values()]
       .sort((a, b) => prelimScore(b) - prelimScore(a) || b.popularity - a.popularity)
-      .slice(0, 8);
+      .slice(0, 6);
     await enrichPersonCandidates(candidates);
 
-    const minScore = personMatchMinForQueries(queries);
-    const lookupLimit = queries.some((query) => compact(query).length <= 4) ? 2 : MAX_PERSON_LOOKUPS;
+    const minScore = personMatchMinForQueries(matchQueries);
+    const lookupLimit = compact(query).length <= 4 ? 2 : MAX_PERSON_LOOKUPS;
     const matched = candidates
-      .map((person) => ({ person, score: personMatchScore(person.names, queries) }))
+      .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
       .filter((row) => row.score >= minScore)
       .sort((a, b) => b.score - a.score || b.person.popularity - a.person.popularity)
       .slice(0, lookupLimit);
 
     if (!matched.length) return [];
 
-    const creditPages = await Promise.all(
-      matched.map(({ person }) => Promise.all([
-        tmdb<{ cast?: CreditItem[]; crew?: CreditItem[] }>(`/person/${person.id}/combined_credits`, { language: "ko-KR" }),
-        tmdb<{ cast?: CreditItem[] }>(`/person/${person.id}/tv_credits`, { language: "ko-KR" }),
-      ])),
-    );
-
     const seen = new Set<string>();
     const hits: SearchHit[] = [];
 
-    for (let index = 0; index < matched.length; index++) {
-      const { person } = matched[index];
+    for (const { person } of matched) {
       const personName = pickKorean(person.names) || person.names[0] || "";
       const extras = {
         matchedPerson: personName,
         matchedPersonNames: person.names,
       };
-      const [combined, tvCredits] = creditPages[index];
-
-      for (const item of combined.cast ?? []) {
-        const hit = toHit(item, undefined, {
-          ...extras,
-          matchedRole: item.character?.trim() || "출연",
-        });
-        if (!hit || seen.has(hit.id)) continue;
-        seen.add(hit.id);
-        hits.push(hit);
-      }
-
-      for (const item of tvCredits.cast ?? []) {
-        const hit = toHit(item, undefined, {
-          ...extras,
-          matchedRole: item.character?.trim() || "출연",
-        });
-        if (!hit || seen.has(hit.id)) continue;
-        seen.add(hit.id);
-        hits.push(hit);
-      }
-
-      for (const item of combined.crew ?? []) {
-        if (!item.job || !DIRECTOR_JOBS.has(item.job)) continue;
-        const hit = toHit(item, undefined, {
-          ...extras,
-          matchedRole: "감독",
-        });
-        if (!hit || seen.has(hit.id)) continue;
-        seen.add(hit.id);
-        hits.push(hit);
-      }
+      appendPersonCredits(hits, seen, await fetchPersonCredits(person.id), extras);
     }
 
     return hits.sort((a, b) => b.voteCount - a.voteCount);
   } catch {
     return [];
   }
+}
+
+function filterTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
+  const hasFilmography = hits.some((hit) => hit.matchedPerson);
+  if (!hasFilmography || compact(query).length > 4 || !isLatinOnly(query)) return hits;
+
+  return hits.filter((hit) => {
+    if (hit.matchedPerson) return true;
+    const titleScore = relevance([hit.titleKO, hit.titleEN], query);
+    if (titleScore >= 80 && !isKoreanHit(hit)) return false;
+    return true;
+  });
 }
 
 function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
@@ -512,13 +569,16 @@ export async function searchTitles(query: string): Promise<SearchHit[]> {
   for (const extra of hangulSpaceVariants(query)) {
     if (!titleVariants.includes(extra)) titleVariants.push(extra);
   }
+  for (const alias of (PERSON_QUERY_ALIASES[compact(query)] ?? []).filter(containsHangul)) {
+    if (!titleVariants.includes(alias)) titleVariants.push(alias);
+  }
 
   const [titleHits, personHits] = await Promise.all([
     collect(titleVariants),
-    searchPersonFilmography(personSearchQueries(query)),
+    searchPersonFilmography(query),
   ]);
 
-  const merged = sortSearchHits(mergeHits(titleHits, personHits), query);
+  const merged = filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), query), query);
   return localizeHitTitles(merged);
 }
 
