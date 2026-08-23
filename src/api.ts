@@ -1,8 +1,8 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, compact, formatCreditRole, formatCrewRole, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
-import type { CastMember, MediaKind, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
+import type { CastMember, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
 
 const TMDB = "https://api.themoviedb.org/3";
 
@@ -251,13 +251,104 @@ async function searchPersonPages(queries: string[], languages: string[]): Promis
   return people;
 }
 
+function hasStreamingOffer(hit: SearchHit): boolean {
+  return Boolean(hit.providerLogo || hit.providerName);
+}
+
 function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number {
+  const ottDiff = Number(hasStreamingOffer(b)) - Number(hasStreamingOffer(a));
+  if (ottDiff !== 0) return ottDiff;
   const ratingDiff = b.voteAverage - a.voteAverage;
   if (ratingDiff !== 0) return ratingDiff;
   const yearA = Number.parseInt(a.year ?? "0", 10) || 0;
   const yearB = Number.parseInt(b.year ?? "0", 10) || 0;
   if (yearB !== yearA) return yearB - yearA;
   return popularityVotes(b) - popularityVotes(a);
+}
+
+export function sortPersonFilmographyHits(hits: SearchHit[]): SearchHit[] {
+  const person = hits.filter((hit) => hit.matchedPerson);
+  const rest = hits.filter((hit) => !hit.matchedPerson);
+  if (!person.length) return hits;
+  return [...person.sort(comparePersonFilmographyHits), ...rest];
+}
+
+async function enrichHitProvider(hit: SearchHit, region: string): Promise<SearchHit> {
+  try {
+    const data = await tmdb<{
+      results?: Record<string, {
+        flatrate?: ProviderDTO[];
+        free?: ProviderDTO[];
+        ads?: ProviderDTO[];
+      }>;
+    }>(`/${hit.kind}/${hit.tmdbID}/watch/providers`, { watch_region: region });
+    const country = data.results?.[region];
+    if (!country) return hit;
+    const provider = country.flatrate?.[0] ?? country.free?.[0] ?? country.ads?.[0];
+    if (!provider) return hit;
+    return {
+      ...hit,
+      providerLogo: provider.logo_path,
+      providerName: provider.provider_name,
+      providerID: provider.provider_id,
+    };
+  } catch {
+    return hit;
+  }
+}
+
+export async function enrichFilmographyProviders(hits: SearchHit[], region: string): Promise<SearchHit[]> {
+  const targets = hits.filter((hit) => hit.matchedPerson);
+  if (!targets.length) return hits;
+  const enriched = await mapInBatches(targets, 6, (hit) => enrichHitProvider(hit, region));
+  const byID = new Map(enriched.map((hit) => [hit.id, hit]));
+  return hits.map((hit) => byID.get(hit.id) ?? hit);
+}
+
+export async function resolvePersonID(query: string): Promise<number | undefined> {
+  const cacheKey = compact(query) || query.trim().toLowerCase();
+  const knownID = STAGE_NAME_PERSON_IDS[cacheKey];
+  if (knownID) return knownID;
+  const person = await pickMatchedPerson(query);
+  return person?.id;
+}
+
+const personDetailCache = new Map<number, { detail: PersonDetail; expires: number }>();
+const PERSON_DETAIL_TTL_MS = 30 * 60 * 1000;
+
+interface PersonDetailDTO {
+  id: number;
+  name?: string;
+  also_known_as?: string[];
+  biography?: string;
+  birthday?: string | null;
+  place_of_birth?: string | null;
+  profile_path?: string | null;
+  known_for_department?: string;
+}
+
+export async function fetchPersonDetail(personID: number): Promise<PersonDetail> {
+  const cached = personDetailCache.get(personID);
+  if (cached && cached.expires > Date.now()) return { ...cached.detail };
+
+  const [ko, en] = await Promise.all([
+    tmdb<PersonDetailDTO>(`/person/${personID}`, { language: "ko-KR" }),
+    tmdb<PersonDetailDTO>(`/person/${personID}`, { language: "en-US" }),
+  ]);
+  const names = [...new Set([ko.name, en.name, ...(ko.also_known_as ?? []), ...(en.also_known_as ?? [])].filter(Boolean))] as string[];
+  const detail: PersonDetail = {
+    tmdbID: ko.id,
+    nameKO: pickKorean(names) || ko.name || en.name || "",
+    nameEN: pickEnglish(names) || en.name || ko.name || "",
+    department: formatDepartment(ko.known_for_department ?? en.known_for_department),
+    birthday: ko.birthday ?? en.birthday ?? undefined,
+    placeOfBirth: ko.place_of_birth ?? en.place_of_birth ?? undefined,
+    biography: (ko.biography && ko.biography.length > 0 ? ko.biography : en.biography) ?? "",
+    profilePath: ko.profile_path ?? en.profile_path ?? undefined,
+    tmdbURL: `https://www.themoviedb.org/person/${ko.id}?language=ko-KR`,
+  };
+  personDetailCache.set(personID, { detail: { ...detail }, expires: Date.now() + PERSON_DETAIL_TTL_MS });
+  return { ...detail };
 }
 
 function finalizePersonHits(hits: SearchHit[]): SearchHit[] {
@@ -768,7 +859,7 @@ export async function searchPersonHits(query: string): Promise<SearchHit[]> {
 }
 
 export function mergeSearchResults(titleHits: SearchHit[], personHits: SearchHit[], query: string): SearchHit[] {
-  return filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), query), query);
+  return sortPersonFilmographyHits(filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), query), query));
 }
 
 export async function searchTitles(query: string): Promise<SearchHit[]> {

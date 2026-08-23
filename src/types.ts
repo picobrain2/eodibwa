@@ -1,5 +1,5 @@
 export type MediaKind = "movie" | "tv";
-export type MediaFilter = "all" | "movie" | "tv";
+export type MediaFilter = "all" | "movie" | "tv" | "direct" | "create" | "act" | "write";
 
 export type WatchOffer = "flatrate" | "free" | "ads" | "rent" | "buy";
 
@@ -89,6 +89,18 @@ export interface PopularReview {
   rating?: number;
   source: string;
   url?: string;
+}
+
+export interface PersonDetail {
+  tmdbID: number;
+  nameKO: string;
+  nameEN: string;
+  department?: string;
+  birthday?: string;
+  placeOfBirth?: string;
+  biography: string;
+  profilePath?: string;
+  tmdbURL: string;
 }
 
 export const REGIONS: { code: string; name: string }[] = [

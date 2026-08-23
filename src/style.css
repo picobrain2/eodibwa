@@ -175,7 +175,10 @@ body { background: var(--bg); color: var(--text); }
   gap: 8px;
 }
 .header { display: grid; grid-template-columns: 168px 1fr; gap: 20px; }
+.person-header { align-items: start; }
+.person-photo { width: 168px; height: 168px; border-radius: 50%; object-fit: cover; box-shadow: 0 10px 24px rgba(0,0,0,.35); }
 .poster { width: 168px; height: 252px; border-radius: 12px; box-shadow: 0 10px 24px rgba(0,0,0,.35); }
+.filters { display: flex; flex-wrap: wrap; gap: 6px; }
 .pills { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
 .pills span { background: rgba(237,189,81,.16); border-radius: 999px; padding: 4px 8px; font-size: 12px; }
 .theater-badge {

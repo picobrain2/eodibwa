@@ -1,12 +1,12 @@
-import { fetchDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, searchPersonHits, searchPersonKnownHits, searchTitleHits, watchaSearchURL } from "./api";
+import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, resolvePersonID, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
-import { compact, containsHangul } from "./lang";
+import { classifyCreditFilter, compact, containsHangul } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
 import { settings } from "./settings";
-import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
+import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type PersonDetail, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let query = "";
@@ -14,9 +14,11 @@ let filter: MediaFilter = "all";
 let hits: SearchHit[] = [];
 let selected: SearchHit | undefined;
 let detail: TitleDetail | undefined;
+let personDetail: PersonDetail | undefined;
 let searching = false;
 let loadingPersonSearch = false;
 let loadingDetail = false;
+let loadingPersonDetail = false;
 let error = "";
 let debounce: number | undefined;
 let searchGeneration = 0;
@@ -69,6 +71,7 @@ function findHit(id: string): SearchHit | undefined {
 
 let searchInput!: HTMLInputElement;
 let resultsEl!: HTMLDivElement;
+let filtersEl!: HTMLDivElement;
 let detailEl!: HTMLElement;
 let recommendHost!: HTMLDivElement;
 let detailHost!: HTMLDivElement;
@@ -125,13 +128,16 @@ function goToMainHome(): void {
   hits = [];
   selected = undefined;
   detail = undefined;
+  personDetail = undefined;
   detailError = "";
   loadingDetail = false;
+  loadingPersonDetail = false;
   loadingReviews = false;
   searching = false;
   error = "";
   searchGeneration += 1;
   detailGeneration += 1;
+  personDetailGeneration += 1;
 
   if (isMobileLayout()) {
     showDetailPage = false;
@@ -308,9 +314,56 @@ function bindHits(root: ParentNode): void {
   });
 }
 
+const FILTER_LABELS: Record<MediaFilter, string> = {
+  all: "전체",
+  movie: "영화",
+  tv: "시리즈",
+  direct: "연출",
+  create: "기획",
+  act: "출연",
+  write: "각본",
+};
+
+function hasPersonFilmography(list: SearchHit[] = hits): boolean {
+  return list.some((hit) => hit.matchedPerson);
+}
+
+function availableFilters(list: SearchHit[] = hits): MediaFilter[] {
+  const options: MediaFilter[] = ["all", "tv", "movie"];
+  if (!hasPersonFilmography(list)) return options;
+  const roles = new Set(
+    list
+      .filter((hit) => hit.matchedPerson)
+      .map((hit) => classifyCreditFilter(hit.matchedRole))
+      .filter((role): role is Exclude<typeof role, undefined> => Boolean(role)),
+  );
+  if (roles.has("direct")) options.push("direct");
+  if (roles.has("create")) options.push("create");
+  if (roles.has("act")) options.push("act");
+  if (roles.has("write")) options.push("write");
+  return options;
+}
+
+function updateFilterButtons(): void {
+  if (!filtersEl) return;
+  const options = availableFilters();
+  if (!options.includes(filter)) filter = "all";
+  filtersEl.innerHTML = options.map((item) => `
+    <button data-filter="${item}" class="${filter === item ? "active" : ""}">${FILTER_LABELS[item]}</button>
+  `).join("");
+  filtersEl.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      filter = button.dataset.filter as MediaFilter;
+      updateFilterButtons();
+      updateResults();
+    });
+  });
+}
+
 function filteredHits(): SearchHit[] {
   if (filter === "all") return hits;
-  return hits.filter((hit) => hit.kind === filter);
+  if (filter === "movie" || filter === "tv") return hits.filter((hit) => hit.kind === filter);
+  return hits.filter((hit) => classifyCreditFilter(hit.matchedRole) === filter);
 }
 
 let mounted = false;
@@ -373,11 +426,7 @@ function mount(): void {
         <div class="search-box">
           <button type="button" class="app-title go-home" id="go-home">어디봐</button>
           <input id="q" placeholder="제목 · 출연진 · 감독 (한글/영어)" />
-          <div class="filters">
-            ${(["all", "movie", "tv"] as MediaFilter[]).map((item) => `
-              <button data-filter="${item}" class="${filter === item ? "active" : ""}">${item === "all" ? "전체" : item === "movie" ? "영화" : "시리즈"}</button>
-            `).join("")}
-          </div>
+          <div class="filters" id="filters"></div>
         </div>
         <div class="results"></div>
       </aside>
@@ -389,6 +438,7 @@ function mount(): void {
 
   searchInput = app.querySelector<HTMLInputElement>("#q")!;
   resultsEl = app.querySelector<HTMLDivElement>(".results")!;
+  filtersEl = app.querySelector<HTMLDivElement>("#filters")!;
   detailEl = app.querySelector<HTMLElement>(".detail")!;
   recommendHost = app.querySelector<HTMLDivElement>("#recommend-host")!;
   detailHost = app.querySelector<HTMLDivElement>("#detail-host")!;
@@ -407,15 +457,7 @@ function mount(): void {
 
   bindHomeButtons();
 
-  app.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => {
-    button.addEventListener("click", () => {
-      filter = button.dataset.filter as MediaFilter;
-      app.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((item) => {
-        item.classList.toggle("active", item.dataset.filter === filter);
-      });
-      updateResults();
-    });
-  });
+  updateFilterButtons();
 
   window.addEventListener("resize", () => {
     if (!isMobileLayout()) {
@@ -610,8 +652,54 @@ function updateDetail(): void {
     return;
   }
   detailHost.innerHTML = "";
+  if (detail) {
+    detailEl.innerHTML = detailHTML();
+    bindDetailControls(detailEl);
+    return;
+  }
+  if (loadingDetail || detailError) {
+    detailEl.innerHTML = detailHTML();
+    bindDetailControls(detailEl);
+    return;
+  }
+  if (personDetail || loadingPersonDetail) {
+    detailEl.innerHTML = personDetailHTML();
+    return;
+  }
   detailEl.innerHTML = detailHTML();
   bindDetailControls(detailEl);
+}
+
+function formatPersonBirthday(value?: string): string | undefined {
+  if (!value) return undefined;
+  return value.length >= 10 ? value.slice(0, 10) : value;
+}
+
+function personDetailHTML(): string {
+  if (loadingPersonDetail && !personDetail) {
+    return `<div class="loading">인물 정보를 불러오는 중…</div>`;
+  }
+  if (!personDetail) return emptyDetailHTML();
+  const person = personDetail;
+  const primary = person.nameKO || person.nameEN;
+  const secondary = person.nameEN && person.nameEN !== primary ? person.nameEN : "";
+  const meta = [person.department, formatPersonBirthday(person.birthday), person.placeOfBirth].filter(Boolean);
+  return `
+    <div class="header person-header">
+      <img class="person-photo" alt="" src="${posterURL(person.profilePath, "w500") ?? ""}" loading="lazy" decoding="async" />
+      <div>
+        <h1>${escapeHTML(primary)}</h1>
+        ${secondary ? `<p>${escapeHTML(secondary)}</p>` : ""}
+        <div class="pills">${meta.map((item) => `<span>${escapeHTML(String(item))}</span>`).join("")}</div>
+        ${hasPersonFilmography() ? `<p class="hint">왼쪽 목록에서 작품을 선택하면 상세 정보를 볼 수 있습니다.</p>` : ""}
+      </div>
+    </div>
+    ${person.biography ? `<section class="section"><h2>소개</h2><p>${escapeHTML(person.biography)}</p></section>` : ""}
+    <section class="section links">
+      <a href="${person.tmdbURL}" target="_blank" rel="noreferrer">TMDB에서 열기</a>
+    </section>
+    <p class="attr">인물 정보 TMDB</p>
+  `;
 }
 
 function updateDetailPage(): void {
@@ -621,6 +709,8 @@ function updateDetailPage(): void {
   }
   const heading = detail
     ? (detail.titleKO || detail.titleEN)
+    : personDetail
+      ? (personDetail.nameKO || personDetail.nameEN)
     : selected
       ? (selected.titleKO || selected.titleEN)
       : "상세 정보";
@@ -631,7 +721,7 @@ function updateDetailPage(): void {
         <button class="ghost go-home" type="button">어디봐</button>
         <h2>${escapeHTML(heading)}</h2>
       </header>
-      <div class="detail-page-body">${detailHTML({ forOverlay: true })}</div>
+      <div class="detail-page-body">${detail || loadingDetail || detailError ? detailHTML({ forOverlay: true }) : personDetailHTML()}</div>
     </div>
   `;
   detailHost.querySelector("#close-detail")?.addEventListener("click", () => {
@@ -647,6 +737,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
     if (detailError) return `<div class="empty">${escapeHTML(detailError)}</div>`;
     if (searching && query.trim()) return `<div class="loading">검색 중…</div>`;
     if (loadingDetail) return `<div class="loading">정보를 불러오는 중…</div>`;
+    if (loadingPersonDetail || personDetail) return personDetailHTML();
     return options?.forOverlay ? `<div class="loading">정보를 불러오는 중…</div>` : emptyDetailHTML();
   }
   const d = detail;
@@ -779,7 +870,10 @@ async function runSearch(raw: string): Promise<void> {
   detailGeneration += 1;
   loadingDetail = !isMobileLayout();
   detail = undefined;
+  personDetail = undefined;
+  loadingPersonDetail = false;
   detailError = "";
+  personDetailGeneration += 1;
   if (!isMobileLayout()) selected = undefined;
   updateResults();
   updateDetail();
@@ -795,12 +889,16 @@ async function runSearch(raw: string): Promise<void> {
     hits = prioritizeNowPlaying(titleHits, playing);
     selected = isMobileLayout() ? undefined : hits[0];
     searching = false;
+    updateFilterButtons();
     updateResults();
     const deferDetail = shouldDeferDetailForPersonSearch(selected, trimmed);
     if (selected && !deferDetail) {
       void loadSelected();
+    } else if (!deferDetail) {
+      loadingDetail = false;
+      updateDetail();
     } else {
-      loadingDetail = deferDetail;
+      loadingDetail = false;
       updateDetail();
     }
 
@@ -815,18 +913,7 @@ async function runSearch(raw: string): Promise<void> {
 
         let combined = titleHits;
         if (quickHits.length) {
-          combined = mergeSearchResults(titleHits, quickHits, trimmed);
-          hits = prioritizeNowPlaying(combined, nowPlayingIDs);
-          if (!isMobileLayout()) {
-            const previousSelected = selected?.id;
-            selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
-            updateResults();
-            if (selected && (!previousSelected || selected.id !== previousSelected)) {
-              void loadSelected();
-            }
-          } else {
-            updateResults();
-          }
+          combined = await applyPersonFilmography(quickHits, titleHits, trimmed, generation, selected?.id);
         }
 
         if (quickHits.length >= 10) {
@@ -835,7 +922,7 @@ async function runSearch(raw: string): Promise<void> {
           void refineSearchWithImdb(combined, trimmed).then((refined) => {
             if (generation !== searchGeneration) return;
             if (searchInput.value.trim() !== trimmed) return;
-            hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+            hits = sortPersonFilmographyHits(prioritizeNowPlaying(refined, nowPlayingIDs));
             updateResults();
           });
           return;
@@ -845,21 +932,12 @@ async function runSearch(raw: string): Promise<void> {
         if (generation !== searchGeneration) return;
         if (searchInput.value.trim() !== trimmed) return;
         loadingPersonSearch = false;
-        const previousSelected = selected?.id;
-        combined = mergeSearchResults(titleHits, personHits, trimmed);
-        hits = prioritizeNowPlaying(combined, nowPlayingIDs);
-        if (!isMobileLayout()) {
-          selected = hits.find((hit) => hit.id === previousSelected) ?? hits[0];
-        }
-        updateResults();
-        if (!isMobileLayout() && selected && (!previousSelected || selected.id !== previousSelected)) {
-          void loadSelected();
-        }
+        combined = await applyPersonFilmography(personHits, titleHits, trimmed, generation, selected?.id);
 
         void refineSearchWithImdb(combined, trimmed).then((refined) => {
           if (generation !== searchGeneration) return;
           if (searchInput.value.trim() !== trimmed) return;
-          hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+          hits = sortPersonFilmographyHits(prioritizeNowPlaying(refined, nowPlayingIDs));
           updateResults();
         });
       } catch {
@@ -883,8 +961,57 @@ async function runSearch(raw: string): Promise<void> {
 }
 
 let detailGeneration = 0;
+let personDetailGeneration = 0;
 let loadingReviews = false;
 let detailError = "";
+
+async function loadPersonContext(query: string, generation: number): Promise<void> {
+  if (!hasPersonFilmography()) return;
+  const personGen = ++personDetailGeneration;
+  loadingPersonDetail = true;
+  detail = undefined;
+  detailError = "";
+  loadingDetail = false;
+  updateDetail();
+  try {
+    const personID = await resolvePersonID(query);
+    if (generation !== searchGeneration || personGen !== personDetailGeneration) return;
+    if (!personID) return;
+    personDetail = await fetchPersonDetail(personID);
+  } catch {
+    if (personGen === personDetailGeneration) personDetail = undefined;
+  } finally {
+    if (personGen === personDetailGeneration) loadingPersonDetail = false;
+    if (generation === searchGeneration && !detail) updateDetail();
+  }
+}
+
+async function applyPersonFilmography(
+  personHits: SearchHit[],
+  titleHits: SearchHit[],
+  trimmed: string,
+  generation: number,
+  previousSelected?: string,
+): Promise<SearchHit[]> {
+  const enriched = sortPersonFilmographyHits(await enrichFilmographyProviders(personHits, settings.region));
+  const combined = mergeSearchResults(titleHits, enriched, trimmed);
+  hits = prioritizeNowPlaying(combined, nowPlayingIDs);
+  updateFilterButtons();
+  if (!isMobileLayout()) {
+    const prev = previousSelected ? hits.find((hit) => hit.id === previousSelected) : undefined;
+    const filmography = hits.filter((hit) => hit.matchedPerson);
+    if (filmography.length) {
+      selected = prev?.matchedPerson ? prev : filmography[0];
+    } else {
+      selected = prev ?? hits[0];
+    }
+  }
+  updateResults();
+  if (!isMobileLayout() && hasPersonFilmography(hits)) {
+    void loadPersonContext(trimmed, generation);
+  }
+  return combined;
+}
 
 async function loadSelected(): Promise<void> {
   if (!selected) return;

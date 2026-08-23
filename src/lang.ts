@@ -62,6 +62,31 @@ export function isCrewFocusedDepartment(department?: string): boolean {
   return department === "Directing" || department === "Production" || department === "Writing" || department === "Creator";
 }
 
+const DEPARTMENT_LABELS: Record<string, string> = {
+  Acting: "배우",
+  Directing: "연출",
+  Production: "제작",
+  Writing: "각본",
+  Creator: "기획",
+  Sound: "음악",
+  Camera: "촬영",
+  Editing: "편집",
+  Art: "미술",
+};
+
+export function formatDepartment(department?: string): string | undefined {
+  if (!department) return undefined;
+  return DEPARTMENT_LABELS[department] ?? department;
+}
+
+export function classifyCreditFilter(role?: string): "direct" | "create" | "act" | "write" | undefined {
+  if (!role) return undefined;
+  if (role === "연출") return "direct";
+  if (role === "기획" || role === "프로듀서") return "create";
+  if (role === "각본" || role === "스토리" || role === "원작") return "write";
+  return "act";
+}
+
 export function searchVariants(raw: string): string[] {
   const spaced = collapsed(raw);
   const squeezed = compact(spaced);
