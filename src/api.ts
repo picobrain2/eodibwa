@@ -222,8 +222,17 @@ async function searchPersonPages(queries: string[], languages: string[]): Promis
   return people;
 }
 
+function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number {
+  const ratingDiff = b.voteAverage - a.voteAverage;
+  if (ratingDiff !== 0) return ratingDiff;
+  const yearA = Number.parseInt(a.year ?? "0", 10) || 0;
+  const yearB = Number.parseInt(b.year ?? "0", 10) || 0;
+  if (yearB !== yearA) return yearB - yearA;
+  return popularityVotes(b) - popularityVotes(a);
+}
+
 function finalizePersonHits(hits: SearchHit[]): SearchHit[] {
-  return hits.sort((a, b) => b.voteCount - a.voteCount).slice(0, PERSON_FILMOGRAPHY_LIMIT);
+  return hits.sort(comparePersonFilmographyHits).slice(0, PERSON_FILMOGRAPHY_LIMIT);
 }
 
 async function fetchPersonFilmographyByID(personID: number): Promise<SearchHit[]> {
@@ -401,6 +410,9 @@ function filterTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
 }
 
 function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
+  if (a.matchedPerson && b.matchedPerson) {
+    return comparePersonFilmographyHits(a, b);
+  }
   const left = searchHitScore(a, query);
   const right = searchHitScore(b, query);
   if (left !== right) return right - left;
