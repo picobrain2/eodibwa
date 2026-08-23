@@ -107,6 +107,29 @@ export function hangulSpaceVariants(raw: string): string[] {
   return chars.slice(1).map((_, index) => chars.slice(0, index + 1).join("") + " " + chars.slice(index + 1).join(""));
 }
 
+const HANGUL_DAY_PREFIXES: Record<string, string> = {
+  월요: "월요일",
+  화요: "화요일",
+  수요: "수요일",
+  목요: "목요일",
+  금요: "금요일",
+  토요: "토요일",
+  일요: "일요일",
+};
+
+/** "놀라운 토요" → "놀라운 토요일" 등 미완성 마지막 단어 보완 */
+export function hangulPartialTitleVariants(raw: string): string[] {
+  const spaced = collapsed(raw);
+  const parts = spaced.split(" ");
+  if (parts.length < 2) return [];
+  const last = parts[parts.length - 1];
+  if (last.length < 2) return [];
+  const completion = HANGUL_DAY_PREFIXES[last];
+  if (!completion || last === completion) return [];
+  const variant = [...parts.slice(0, -1), completion].join(" ");
+  return variant === spaced ? [] : [variant];
+}
+
 export function spacedAtScriptBoundaries(text: string): string {
   const kind = (ch: string) => {
     if (HANGUL.test(ch)) return 1;

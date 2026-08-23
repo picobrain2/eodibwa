@@ -1,4 +1,4 @@
-import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, resolvePersonID, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
+import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
@@ -14,7 +14,7 @@ let filter: MediaFilter = "all";
 let hits: SearchHit[] = [];
 let selected: SearchHit | undefined;
 let detail: TitleDetail | undefined;
-let personDetail: PersonDetail | undefined;
+let personDetails: PersonDetail[] = [];
 let searching = false;
 let loadingPersonSearch = false;
 let loadingDetail = false;
@@ -128,7 +128,7 @@ function goToMainHome(): void {
   hits = [];
   selected = undefined;
   detail = undefined;
-  personDetail = undefined;
+  personDetails = [];
   detailError = "";
   loadingDetail = false;
   loadingPersonDetail = false;
@@ -662,7 +662,7 @@ function updateDetail(): void {
     bindDetailControls(detailEl);
     return;
   }
-  if (personDetail || loadingPersonDetail) {
+  if (personDetails.length || loadingPersonDetail) {
     detailEl.innerHTML = personDetailHTML();
     return;
   }
@@ -675,29 +675,41 @@ function formatPersonBirthday(value?: string): string | undefined {
   return value.length >= 10 ? value.slice(0, 10) : value;
 }
 
-function personDetailHTML(): string {
-  if (loadingPersonDetail && !personDetail) {
-    return `<div class="loading">인물 정보를 불러오는 중…</div>`;
-  }
-  if (!personDetail) return emptyDetailHTML();
-  const person = personDetail;
+function personDetailCardHTML(person: PersonDetail): string {
   const primary = person.nameKO || person.nameEN;
   const secondary = person.nameEN && person.nameEN !== primary ? person.nameEN : "";
   const meta = [person.department, formatPersonBirthday(person.birthday), person.placeOfBirth].filter(Boolean);
   return `
-    <div class="header person-header">
-      <img class="person-photo" alt="" src="${posterURL(person.profilePath, "w500") ?? ""}" loading="lazy" decoding="async" />
-      <div>
-        <h1>${escapeHTML(primary)}</h1>
-        ${secondary ? `<p>${escapeHTML(secondary)}</p>` : ""}
-        <div class="pills">${meta.map((item) => `<span>${escapeHTML(String(item))}</span>`).join("")}</div>
-        ${hasPersonFilmography() ? `<p class="hint">왼쪽 목록에서 작품을 선택하면 상세 정보를 볼 수 있습니다.</p>` : ""}
+    <article class="person-card">
+      <div class="header person-header">
+        <img class="person-photo" alt="" src="${posterURL(person.profilePath, "w500") ?? ""}" loading="lazy" decoding="async" />
+        <div>
+          <h1>${escapeHTML(primary)}</h1>
+          ${secondary ? `<p>${escapeHTML(secondary)}</p>` : ""}
+          <div class="pills">${meta.map((item) => `<span>${escapeHTML(String(item))}</span>`).join("")}</div>
+        </div>
       </div>
-    </div>
-    ${person.biography ? `<section class="section"><h2>소개</h2><p>${escapeHTML(person.biography)}</p></section>` : ""}
-    <section class="section links">
-      <a href="${person.tmdbURL}" target="_blank" rel="noreferrer">TMDB에서 열기</a>
-    </section>
+      ${person.biography ? `<section class="section"><h2>소개</h2><p>${escapeHTML(person.biography)}</p></section>` : ""}
+      <section class="section links">
+        <a href="${person.tmdbURL}" target="_blank" rel="noreferrer">TMDB에서 열기</a>
+      </section>
+    </article>
+  `;
+}
+
+function personDetailHTML(): string {
+  if (loadingPersonDetail && !personDetails.length) {
+    return `<div class="loading">인물 정보를 불러오는 중…</div>`;
+  }
+  if (!personDetails.length) return emptyDetailHTML();
+  const homonymNote = personDetails.length > 1
+    ? `<p class="hint">동명이인 ${personDetails.length}명입니다. 왼쪽 목록에는 직업별로 작품이 함께 표시됩니다.</p>`
+    : hasPersonFilmography()
+      ? `<p class="hint">왼쪽 목록에서 작품을 선택하면 상세 정보를 볼 수 있습니다.</p>`
+      : "";
+  return `
+    ${homonymNote}
+    <div class="person-cards">${personDetails.map((person) => personDetailCardHTML(person)).join("")}</div>
     <p class="attr">인물 정보 TMDB</p>
   `;
 }
@@ -709,8 +721,10 @@ function updateDetailPage(): void {
   }
   const heading = detail
     ? (detail.titleKO || detail.titleEN)
-    : personDetail
-      ? (personDetail.nameKO || personDetail.nameEN)
+    : personDetails.length
+      ? personDetails.length > 1
+        ? `${personDetails[0].nameKO || personDetails[0].nameEN} 외 ${personDetails.length - 1}명`
+        : (personDetails[0].nameKO || personDetails[0].nameEN)
     : selected
       ? (selected.titleKO || selected.titleEN)
       : "상세 정보";
@@ -737,7 +751,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
     if (detailError) return `<div class="empty">${escapeHTML(detailError)}</div>`;
     if (searching && query.trim()) return `<div class="loading">검색 중…</div>`;
     if (loadingDetail) return `<div class="loading">정보를 불러오는 중…</div>`;
-    if (loadingPersonDetail || personDetail) return personDetailHTML();
+    if (loadingPersonDetail || personDetails.length) return personDetailHTML();
     return options?.forOverlay ? `<div class="loading">정보를 불러오는 중…</div>` : emptyDetailHTML();
   }
   const d = detail;
@@ -870,7 +884,7 @@ async function runSearch(raw: string): Promise<void> {
   detailGeneration += 1;
   loadingDetail = !isMobileLayout();
   detail = undefined;
-  personDetail = undefined;
+  personDetails = [];
   loadingPersonDetail = false;
   detailError = "";
   personDetailGeneration += 1;
@@ -974,12 +988,12 @@ async function loadPersonContext(query: string, generation: number): Promise<voi
   loadingDetail = false;
   updateDetail();
   try {
-    const personID = await resolvePersonID(query);
+    const personIDs = await resolvePersonIDs(query);
     if (generation !== searchGeneration || personGen !== personDetailGeneration) return;
-    if (!personID) return;
-    personDetail = await fetchPersonDetail(personID);
+    if (!personIDs.length) return;
+    personDetails = await Promise.all(personIDs.map((personID) => fetchPersonDetail(personID)));
   } catch {
-    if (personGen === personDetailGeneration) personDetail = undefined;
+    if (personGen === personDetailGeneration) personDetails = [];
   } finally {
     if (personGen === personDetailGeneration) loadingPersonDetail = false;
     if (generation === searchGeneration && !detail) updateDetail();

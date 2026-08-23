@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -82,6 +82,7 @@ const STAGE_NAME_PERSON_IDS: Record<string, number> = {
   나영석: 1697747,
 };
 const PERSON_FILMOGRAPHY_LIMIT = 24;
+const PERSON_HOMONYM_LIMIT = 6;
 const PERSON_CACHE_TTL_MS = 30 * 60 * 1000;
 const personFilmographyCache = new Map<string, { hits: SearchHit[]; expires: number }>();
 
@@ -139,7 +140,18 @@ export function isPersonSearchTitleNoise(hit: SearchHit, query: string): boolean
   const title = compact(hit.titleKO || hit.titleEN);
   if (!title) return false;
   if (title === q && !hit.year && hit.voteCount < 10) return true;
-  if (containsHangul(query) && title.startsWith(q) && title.length > q.length) return true;
+  // 짧은 단일어 인물 검색(예: "하하")에서만 "하하하" 같은 접두 확장 제목을 제외한다.
+  const extension = title.length - q.length;
+  if (
+    containsHangul(query) &&
+    !collapsed(query).includes(" ") &&
+    q.length <= 4 &&
+    extension > 0 &&
+    extension <= 2 &&
+    title.startsWith(q)
+  ) {
+    return true;
+  }
   return false;
 }
 
@@ -305,12 +317,17 @@ export async function enrichFilmographyProviders(hits: SearchHit[], region: stri
   return hits.map((hit) => byID.get(hit.id) ?? hit);
 }
 
-export async function resolvePersonID(query: string): Promise<number | undefined> {
+export async function resolvePersonIDs(query: string): Promise<number[]> {
   const cacheKey = compact(query) || query.trim().toLowerCase();
   const knownID = STAGE_NAME_PERSON_IDS[cacheKey];
-  if (knownID) return knownID;
-  const person = await pickMatchedPerson(query);
-  return person?.id;
+  if (knownID) return [knownID];
+  const people = await pickMatchedPeople(query);
+  return people.map((person) => person.id);
+}
+
+export async function resolvePersonID(query: string): Promise<number | undefined> {
+  const ids = await resolvePersonIDs(query);
+  return ids[0];
 }
 
 const personDetailCache = new Map<number, { detail: PersonDetail; expires: number }>();
@@ -351,8 +368,43 @@ export async function fetchPersonDetail(personID: number): Promise<PersonDetail>
   return { ...detail };
 }
 
-function finalizePersonHits(hits: SearchHit[]): SearchHit[] {
-  return hits.sort(comparePersonFilmographyHits).slice(0, PERSON_FILMOGRAPHY_LIMIT);
+function finalizePersonHits(hits: SearchHit[], limit = PERSON_FILMOGRAPHY_LIMIT): SearchHit[] {
+  return hits.sort(comparePersonFilmographyHits).slice(0, limit);
+}
+
+async function buildPersonFilmographyHits(people: PersonCandidate[], rankQueries: string[]): Promise<SearchHit[]> {
+  if (!people.length) return [];
+
+  const needEnrich = people.some((person) => personMatchScore(person.names, rankQueries) < 80);
+  if (needEnrich) await enrichPersonCandidates(people);
+
+  const homonymCount = people.length;
+  const perPersonLimit = Math.min(24, Math.ceil(PERSON_FILMOGRAPHY_LIMIT / homonymCount) + 8);
+  const totalLimit = Math.min(48, PERSON_FILMOGRAPHY_LIMIT * homonymCount);
+  const hits: SearchHit[] = [];
+  const seen = new Set<string>();
+
+  for (const person of people) {
+    const extras = personHitExtras(person, homonymCount);
+    const crewOnly = isCrewFocusedDepartment(person.department);
+    const personHits: SearchHit[] = [];
+    const personSeen = new Set<string>();
+
+    if (person.knownFor.length) {
+      appendKnownForCredits(personHits, personSeen, person.knownFor, extras);
+    }
+    if (personHits.length < 8) {
+      appendPersonCredits(personHits, personSeen, await fetchPersonCredits(person.id), extras, crewOnly);
+    }
+
+    for (const hit of finalizePersonHits(personHits, perPersonLimit)) {
+      if (seen.has(hit.id)) continue;
+      seen.add(hit.id);
+      hits.push(hit);
+    }
+  }
+
+  return finalizePersonHits(hits, totalLimit);
 }
 
 async function fetchPersonFilmographyByID(personID: number): Promise<SearchHit[]> {
@@ -432,21 +484,41 @@ function appendPersonCredits(
   }
 }
 
-async function pickMatchedPerson(query: string): Promise<PersonCandidate | undefined> {
+function personHitExtras(
+  person: PersonCandidate,
+  homonymCount: number,
+): Pick<SearchHit, "matchedPerson" | "matchedPersonNames"> {
+  const baseName = pickKorean(person.names) || person.names[0] || "";
+  const dept = formatDepartment(person.department);
+  const matchedPerson = homonymCount > 1 && dept ? `${baseName} (${dept})` : baseName;
+  return { matchedPerson, matchedPersonNames: person.names };
+}
+
+async function pickMatchedPeople(query: string): Promise<PersonCandidate[]> {
   const matchQueries = personMatchQueries(query);
   const languages = containsHangul(query) ? ["ko-KR"] : ["en-US"];
   const peopleByID = new Map<number, PersonCandidate>();
   for (const person of await searchPersonPages(personSearchQueries(query), languages)) {
     addPersonNames(peopleByID, person);
   }
-  if (!peopleByID.size) return undefined;
+  if (!peopleByID.size) return [];
 
   const minScore = personMatchMinForQueries(matchQueries);
   const matched = [...peopleByID.values()]
     .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
     .filter((row) => row.score >= minScore)
-    .sort(comparePersonCandidates)[0];
-  return matched?.person;
+    .sort(comparePersonCandidates);
+  if (!matched.length) return [];
+
+  const topScore = matched[0].score;
+  if (topScore >= 100) {
+    return matched.filter((row) => row.score >= 100).map((row) => row.person).slice(0, PERSON_HOMONYM_LIMIT);
+  }
+  const tiedTop = matched.filter((row) => row.score === topScore);
+  if (topScore >= 80 && tiedTop.length > 1) {
+    return tiedTop.map((row) => row.person).slice(0, PERSON_HOMONYM_LIMIT);
+  }
+  return [matched[0].person];
 }
 
 export async function searchPersonKnownHits(query: string): Promise<SearchHit[]> {
@@ -462,14 +534,16 @@ export async function searchPersonKnownHits(query: string): Promise<SearchHit[]>
       return hits;
     }
 
-    const person = await pickMatchedPerson(query);
-    if (!person || person.knownFor.length < PERSON_KNOWN_FOR_MIN) return [];
-    const personName = pickKorean(person.names) || person.names[0] || "";
-    const extras = { matchedPerson: personName, matchedPersonNames: person.names };
+    const people = await pickMatchedPeople(query);
+    if (!people.length) return [];
+    const homonymCount = people.length;
     const hits: SearchHit[] = [];
     const seen = new Set<string>();
-    appendKnownForCredits(hits, seen, person.knownFor, extras);
-    return finalizePersonHits(hits);
+    for (const person of people) {
+      if (person.knownFor.length < PERSON_KNOWN_FOR_MIN) continue;
+      appendKnownForCredits(hits, seen, person.knownFor, personHitExtras(person, homonymCount));
+    }
+    return finalizePersonHits(hits, Math.min(48, PERSON_FILMOGRAPHY_LIMIT * homonymCount));
   } catch {
     return [];
   }
@@ -481,7 +555,6 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
   if (cached && cached.expires > Date.now()) return cached.hits;
 
   const rankQueries = personRankQueries(query);
-  const matchQueries = personMatchQueries(query);
 
   try {
     const knownID = STAGE_NAME_PERSON_IDS[cacheKey];
@@ -491,42 +564,10 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
       return hits;
     }
 
-    const languages = containsHangul(query) ? ["ko-KR"] : ["en-US"];
-    const peopleByID = new Map<number, PersonCandidate>();
-    for (const person of await searchPersonPages(personSearchQueries(query), languages)) {
-      addPersonNames(peopleByID, person);
-    }
-    if (!peopleByID.size) return [];
+    const people = await pickMatchedPeople(query);
+    if (!people.length) return [];
 
-    const minScore = personMatchMinForQueries(matchQueries);
-    const matched = [...peopleByID.values()]
-      .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
-      .filter((row) => row.score >= minScore)
-      .sort(comparePersonCandidates)
-      .slice(0, 1);
-
-    if (!matched.length) return [];
-
-    const { person } = matched[0];
-    if (personMatchScore(person.names, rankQueries) < 80) {
-      await enrichPersonCandidates([person]);
-    }
-
-    const personName = pickKorean(person.names) || person.names[0] || "";
-    const extras = { matchedPerson: personName, matchedPersonNames: person.names };
-    const hits: SearchHit[] = [];
-    const seen = new Set<string>();
-    const crewOnly = isCrewFocusedDepartment(person.department);
-
-    if (person.knownFor.length) {
-      appendKnownForCredits(hits, seen, person.knownFor, extras);
-    }
-
-    if (hits.length < 8) {
-      appendPersonCredits(hits, seen, await fetchPersonCredits(person.id), extras, crewOnly);
-    }
-
-    const finalHits = finalizePersonHits(hits);
+    const finalHits = await buildPersonFilmographyHits(people, rankQueries);
     personFilmographyCache.set(cacheKey, { hits: finalHits, expires: Date.now() + PERSON_CACHE_TTL_MS });
     return finalHits;
   } catch {
@@ -834,6 +875,9 @@ function titleSearchVariants(query: string): string[] {
     return titleVariants;
   }
   for (const extra of hangulSpaceVariants(query)) {
+    if (!titleVariants.includes(extra)) titleVariants.push(extra);
+  }
+  for (const extra of hangulPartialTitleVariants(query)) {
     if (!titleVariants.includes(extra)) titleVariants.push(extra);
   }
   for (const alias of (PERSON_QUERY_ALIASES[key] ?? []).filter(containsHangul)) {
