@@ -1,5 +1,6 @@
 export type MediaKind = "movie" | "tv";
 export type MediaFilter = "all" | "movie" | "tv" | "direct" | "create" | "act" | "write";
+export type FilmographySort = "default" | "title" | "rating" | "year";
 
 export type WatchOffer = "flatrate" | "free" | "ads" | "rent" | "buy";
 

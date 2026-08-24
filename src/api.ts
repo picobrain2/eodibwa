@@ -2,7 +2,7 @@ import { lookupKMDB } from "./kmdb";
 import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
-import type { CastMember, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
+import type { CastMember, FilmographySort, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
 
 const TMDB = "https://api.themoviedb.org/3";
 
@@ -273,7 +273,7 @@ function hasReliableRating(hit: SearchHit): boolean {
   return popularityVotes(hit) >= PERSON_MIN_VOTES_FOR_RATING;
 }
 
-function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number {
+export function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number {
   const ottDiff = Number(hasStreamingOffer(b)) - Number(hasStreamingOffer(a));
   if (ottDiff !== 0) return ottDiff;
   const reliableDiff = Number(hasReliableRating(b)) - Number(hasReliableRating(a));
@@ -288,11 +288,51 @@ function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number {
   return popularityVotes(b) - popularityVotes(a);
 }
 
-export function sortPersonFilmographyHits(hits: SearchHit[]): SearchHit[] {
+function compareFilmographyByTitle(a: SearchHit, b: SearchHit): number {
+  const titleA = a.titleKO || a.titleEN;
+  const titleB = b.titleKO || b.titleEN;
+  const byTitle = titleA.localeCompare(titleB, "ko");
+  if (byTitle !== 0) return byTitle;
+  return comparePersonFilmographyHits(a, b);
+}
+
+function compareFilmographyByRating(a: SearchHit, b: SearchHit): number {
+  const reliableDiff = Number(hasReliableRating(b)) - Number(hasReliableRating(a));
+  if (reliableDiff !== 0) return reliableDiff;
+  const ratingDiff = b.voteAverage - a.voteAverage;
+  if (ratingDiff !== 0) return ratingDiff;
+  return popularityVotes(b) - popularityVotes(a);
+}
+
+function compareFilmographyByYear(a: SearchHit, b: SearchHit): number {
+  const yearA = Number.parseInt(a.year ?? "0", 10) || 0;
+  const yearB = Number.parseInt(b.year ?? "0", 10) || 0;
+  if (yearB !== yearA) return yearB - yearA;
+  return compareFilmographyByTitle(a, b);
+}
+
+function compareFilmographyHits(a: SearchHit, b: SearchHit, sort: FilmographySort): number {
+  switch (sort) {
+    case "title":
+      return compareFilmographyByTitle(a, b);
+    case "rating":
+      return compareFilmographyByRating(a, b);
+    case "year":
+      return compareFilmographyByYear(a, b);
+    default:
+      return comparePersonFilmographyHits(a, b);
+  }
+}
+
+export function sortFilmographyHits(hits: SearchHit[], sort: FilmographySort = "default"): SearchHit[] {
   const person = hits.filter((hit) => hit.matchedPerson);
   const rest = hits.filter((hit) => !hit.matchedPerson);
   if (!person.length) return hits;
-  return [...person.sort(comparePersonFilmographyHits), ...rest];
+  return [...person.sort((a, b) => compareFilmographyHits(a, b, sort)), ...rest];
+}
+
+export function sortPersonFilmographyHits(hits: SearchHit[]): SearchHit[] {
+  return sortFilmographyHits(hits, "default");
 }
 
 function collectStreamingProviders(country: {

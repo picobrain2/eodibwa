@@ -1,4 +1,4 @@
-import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
+import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortFilmographyHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
@@ -6,11 +6,12 @@ import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
 import { classifyCreditFilter, compact, containsHangul } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
 import { settings } from "./settings";
-import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type MediaFilter, type PersonDetail, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
+import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type FilmographySort, type MediaFilter, type PersonDetail, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 let query = "";
 let filter: MediaFilter = "all";
+let filmographySort: FilmographySort = "default";
 let hits: SearchHit[] = [];
 let selected: SearchHit | undefined;
 let detail: TitleDetail | undefined;
@@ -72,6 +73,8 @@ function findHit(id: string): SearchHit | undefined {
 let searchInput!: HTMLInputElement;
 let resultsEl!: HTMLDivElement;
 let filtersEl!: HTMLDivElement;
+let filmographySortEl!: HTMLSelectElement;
+let filmographySortWrapEl!: HTMLLabelElement;
 let detailEl!: HTMLElement;
 let recommendHost!: HTMLDivElement;
 let detailHost!: HTMLDivElement;
@@ -151,6 +154,8 @@ function goToMainHome(): void {
   }
 
   if (searchInput) searchInput.value = "";
+  filter = "all";
+  filmographySort = "default";
   selectedProviderID = 8;
   ensureSelectedProvider();
   updateResults();
@@ -277,6 +282,13 @@ function theaterBadgeHTML(): string {
   return `<span class="theater-badge">극장 상영중</span>`;
 }
 
+function hitRatingHTML(hit: SearchHit): string {
+  if (!hit.matchedPerson || hit.voteAverage <= 0) return "";
+  const votes = hit.voteCount;
+  const hint = votes > 0 ? `TMDB ${hit.voteAverage.toFixed(1)} · ${votes.toLocaleString()}명` : `TMDB ${hit.voteAverage.toFixed(1)}`;
+  return `<span class="hit-rating" title="${escapeHTML(hint)}">★ ${hit.voteAverage.toFixed(1)}</span>`;
+}
+
 function hitProvidersHTML(hit: SearchHit): string {
   const providers = hit.streamingProviders?.length
     ? hit.streamingProviders
@@ -297,12 +309,13 @@ function hitButton(hit: SearchHit, selectedId?: string): string {
     : "";
   const meta = [personMeta, hit.titleEN !== hit.titleKO ? hit.titleEN : "", kindLabel(hit.kind), hit.year].filter(Boolean).join(" · ");
   const provider = hitProvidersHTML(hit);
+  const rating = hitRatingHTML(hit);
   const theater = isInTheaters(hit) ? theaterBadgeHTML() : "";
   return `
     <button class="hit ${selectedId === hit.id ? "selected" : ""}" data-id="${hit.id}">
       <img alt="" src="${posterURL(hit.posterPath) ?? ""}" loading="lazy" decoding="async" />
       <span>
-        <b>${escapeHTML(hit.titleKO || hit.titleEN)}${theater}</b>
+        <b>${escapeHTML(hit.titleKO || hit.titleEN)}${rating}${theater}</b>
         <small>${escapeHTML(meta)}</small>
       </span>
       ${provider}
@@ -336,6 +349,13 @@ const FILTER_LABELS: Record<MediaFilter, string> = {
   write: "각본",
 };
 
+const FILMOGRAPHY_SORT_LABELS: Record<FilmographySort, string> = {
+  default: "추천순",
+  title: "제목순 (ㄱ~ㅎ)",
+  rating: "평점순",
+  year: "출시년도순",
+};
+
 function hasPersonFilmography(list: SearchHit[] = hits): boolean {
   return list.some((hit) => hit.matchedPerson);
 }
@@ -366,16 +386,34 @@ function updateFilterButtons(): void {
   filtersEl.querySelectorAll<HTMLButtonElement>("[data-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       filter = button.dataset.filter as MediaFilter;
-      updateFilterButtons();
+      updateFilmographyControls();
       updateResults();
     });
   });
 }
 
+function updateFilmographySortControl(): void {
+  if (!filmographySortWrapEl || !filmographySortEl) return;
+  const show = hasPersonFilmography();
+  filmographySortWrapEl.hidden = !show;
+  if (!show) return;
+  filmographySortEl.innerHTML = (Object.keys(FILMOGRAPHY_SORT_LABELS) as FilmographySort[]).map((item) => `
+    <option value="${item}">${FILMOGRAPHY_SORT_LABELS[item]}</option>
+  `).join("");
+  filmographySortEl.value = filmographySort;
+}
+
+function updateFilmographyControls(): void {
+  updateFilterButtons();
+  updateFilmographySortControl();
+}
+
 function filteredHits(): SearchHit[] {
-  if (filter === "all") return hits;
-  if (filter === "movie" || filter === "tv") return hits.filter((hit) => hit.kind === filter);
-  return hits.filter((hit) => classifyCreditFilter(hit.matchedRole) === filter);
+  let list = hits;
+  if (filter === "movie" || filter === "tv") list = hits.filter((hit) => hit.kind === filter);
+  else if (filter !== "all") list = hits.filter((hit) => classifyCreditFilter(hit.matchedRole) === filter);
+  if (!hasPersonFilmography(list)) return list;
+  return sortFilmographyHits(list, filmographySort);
 }
 
 let mounted = false;
@@ -439,6 +477,10 @@ function mount(): void {
           <button type="button" class="app-title go-home" id="go-home">어디봐</button>
           <input id="q" placeholder="제목 · 출연진 · 감독 (한글/영어)" />
           <div class="filters" id="filters"></div>
+          <label class="filmography-sort" id="filmography-sort-wrap" hidden>
+            <span>정렬</span>
+            <select id="filmography-sort"></select>
+          </label>
         </div>
         <div class="results"></div>
       </aside>
@@ -451,6 +493,8 @@ function mount(): void {
   searchInput = app.querySelector<HTMLInputElement>("#q")!;
   resultsEl = app.querySelector<HTMLDivElement>(".results")!;
   filtersEl = app.querySelector<HTMLDivElement>("#filters")!;
+  filmographySortWrapEl = app.querySelector<HTMLLabelElement>("#filmography-sort-wrap")!;
+  filmographySortEl = app.querySelector<HTMLSelectElement>("#filmography-sort")!;
   detailEl = app.querySelector<HTMLElement>(".detail")!;
   recommendHost = app.querySelector<HTMLDivElement>("#recommend-host")!;
   detailHost = app.querySelector<HTMLDivElement>("#detail-host")!;
@@ -469,7 +513,12 @@ function mount(): void {
 
   bindHomeButtons();
 
-  updateFilterButtons();
+  filmographySortEl.addEventListener("change", () => {
+    filmographySort = filmographySortEl.value as FilmographySort;
+    updateResults();
+  });
+
+  updateFilmographyControls();
 
   window.addEventListener("resize", () => {
     if (!isMobileLayout()) {
@@ -893,6 +942,8 @@ async function runSearch(raw: string): Promise<void> {
   searching = true;
   loadingPersonSearch = false;
   error = "";
+  filter = "all";
+  filmographySort = "default";
   detailGeneration += 1;
   loadingDetail = !isMobileLayout();
   detail = undefined;
@@ -915,7 +966,7 @@ async function runSearch(raw: string): Promise<void> {
     hits = prioritizeNowPlaying(titleHits, playing);
     selected = isMobileLayout() ? undefined : hits[0];
     searching = false;
-    updateFilterButtons();
+    updateFilmographyControls();
     updateResults();
     const deferDetail = shouldDeferDetailForPersonSearch(selected, trimmed);
     if (selected && !deferDetail) {
@@ -1022,7 +1073,7 @@ async function applyPersonFilmography(
   const enriched = sortPersonFilmographyHits(await enrichFilmographyProviders(personHits, settings.region));
   const combined = mergeSearchResults(titleHits, enriched, trimmed);
   hits = prioritizeNowPlaying(combined, nowPlayingIDs);
-  updateFilterButtons();
+  updateFilmographyControls();
   if (!isMobileLayout()) {
     const prev = previousSelected ? hits.find((hit) => hit.id === previousSelected) : undefined;
     const filmography = hits.filter((hit) => hit.matchedPerson);
