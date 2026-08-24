@@ -158,6 +158,7 @@ function goToMainHome(): void {
   filmographySort = "default";
   selectedProviderID = 8;
   ensureSelectedProvider();
+  updateFilmographyControls();
   updateResults();
   updateDetail();
   searchInput?.focus();
@@ -349,13 +350,6 @@ const FILTER_LABELS: Record<MediaFilter, string> = {
   write: "각본",
 };
 
-const FILMOGRAPHY_SORT_LABELS: Record<FilmographySort, string> = {
-  default: "추천순",
-  title: "제목순 (ㄱ~ㅎ)",
-  rating: "평점순",
-  year: "출시년도순",
-};
-
 function hasPersonFilmography(list: SearchHit[] = hits): boolean {
   return list.some((hit) => hit.matchedPerson);
 }
@@ -396,10 +390,10 @@ function updateFilmographySortControl(): void {
   if (!filmographySortWrapEl || !filmographySortEl) return;
   const show = hasPersonFilmography();
   filmographySortWrapEl.hidden = !show;
-  if (!show) return;
-  filmographySortEl.innerHTML = (Object.keys(FILMOGRAPHY_SORT_LABELS) as FilmographySort[]).map((item) => `
-    <option value="${item}">${FILMOGRAPHY_SORT_LABELS[item]}</option>
-  `).join("");
+  if (!show) {
+    filmographySortEl.value = "default";
+    return;
+  }
   filmographySortEl.value = filmographySort;
 }
 
@@ -479,7 +473,12 @@ function mount(): void {
           <div class="filters" id="filters"></div>
           <label class="filmography-sort" id="filmography-sort-wrap" hidden>
             <span>정렬</span>
-            <select id="filmography-sort"></select>
+            <select id="filmography-sort">
+              <option value="default">추천순</option>
+              <option value="title">제목순 (ㄱ~ㅎ)</option>
+              <option value="rating">평점순</option>
+              <option value="year">출시년도순</option>
+            </select>
           </label>
         </div>
         <div class="results"></div>
@@ -655,6 +654,7 @@ function updateResults(): void {
   resultsEl.querySelector("#open-recommend")?.addEventListener("click", () => {
     openRecommendPage();
   });
+  updateFilmographySortControl();
 }
 
 function updateRecommendPage(): void {
@@ -929,6 +929,9 @@ async function runSearch(raw: string): Promise<void> {
     error = "";
     searching = false;
     loadingPersonSearch = false;
+    filter = "all";
+    filmographySort = "default";
+    updateFilmographyControls();
     updateResults();
     return;
   }

@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants } from "./lang";
+import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants, sortableTitle } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, FilmographySort, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -289,8 +289,8 @@ export function comparePersonFilmographyHits(a: SearchHit, b: SearchHit): number
 }
 
 function compareFilmographyByTitle(a: SearchHit, b: SearchHit): number {
-  const titleA = a.titleKO || a.titleEN;
-  const titleB = b.titleKO || b.titleEN;
+  const titleA = sortableTitle(a.titleKO || a.titleEN);
+  const titleB = sortableTitle(b.titleKO || b.titleEN);
   const byTitle = titleA.localeCompare(titleB, "ko");
   if (byTitle !== 0) return byTitle;
   return comparePersonFilmographyHits(a, b);

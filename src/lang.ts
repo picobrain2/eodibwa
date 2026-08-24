@@ -147,6 +147,12 @@ export function spacedAtScriptBoundaries(text: string): string {
   return collapsed(output);
 }
 
+export function sortableTitle(title: string): string {
+  const trimmed = title.trim();
+  const withoutLeading = trimmed.replace(/^[^\p{L}\p{N}]+/gu, "");
+  return withoutLeading || trimmed;
+}
+
 export function relevance(titles: string[], query: string): number {
   const q = compact(query);
   if (!q) return 0;
