@@ -484,27 +484,41 @@ function bindVideoPreview(root: ParentNode): void {
   });
 }
 
+function videoTypeLabel(type: string): string {
+  const labels: Record<string, string> = {
+    Trailer: "예고편",
+    Teaser: "티저",
+    Clip: "클립",
+    Featurette: "특별",
+    "Behind the Scenes": "비하인드",
+    Bloopers: "NG",
+    "Opening Credits": "오프닝",
+  };
+  return labels[type] ?? type;
+}
+
 function trailersSectionHTML(videos: TitleDetail["videos"]): string {
   if (!videos.length) return "";
   return `
     <section class="section">
-      <h2>예고편</h2>
+      <h2>예고편 · 영상</h2>
       <div class="video-row">
         ${videos.map((video) => {
           const thumb = youtubeThumbURL(video.embedURL);
+          const kind = videoTypeLabel(video.type);
           return `
           <button
             type="button"
             class="video-open"
             data-video-embed="${escapeHTML(video.embedURL)}"
             data-video-title="${escapeHTML(video.name)}"
-            aria-label="${escapeHTML(video.name)} 재생"
+            aria-label="${escapeHTML(`${kind} ${video.name}`)} 재생"
           >
             <span class="video-preview">
               ${thumb ? `<img alt="" src="${thumb}" loading="lazy" decoding="async" />` : ""}
               <span class="video-play" aria-hidden="true">▶</span>
             </span>
-            <span class="video-label">${escapeHTML(video.name)}</span>
+            <span class="video-label"><span class="video-kind">${escapeHTML(kind)}</span>${escapeHTML(video.name)}</span>
           </button>`;
         }).join("")}
       </div>

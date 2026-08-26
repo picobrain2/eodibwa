@@ -1046,6 +1046,7 @@ interface DetailDTO {
       type?: string;
       name?: string;
       official?: boolean;
+      published_at?: string;
     }[];
   };
   images?: {
@@ -1054,15 +1055,22 @@ interface DetailDTO {
   };
 }
 
+const DETAIL_VIDEO_LIMIT = 16;
+const DETAIL_STILL_LIMIT = 16;
+const DETAIL_IMAGE_LANG = "ko,null,en";
+
 const VIDEO_TYPE_ORDER: Record<string, number> = {
   Trailer: 0,
   Teaser: 1,
   Clip: 2,
   Featurette: 3,
   "Behind the Scenes": 4,
+  Bloopers: 5,
+  "Opening Credits": 6,
 };
 
-function parseDetailVideos(videos?: DetailDTO["videos"]): MediaVideo[] {
+function parseDetailVideos(videos?: DetailDTO["videos"], limit = DETAIL_VIDEO_LIMIT): MediaVideo[] {
+  const seen = new Set<string>();
   return (videos?.results ?? [])
     .filter((item) => item.site === "YouTube" && item.key)
     .sort((a, b) => {
@@ -1070,9 +1078,18 @@ function parseDetailVideos(videos?: DetailDTO["videos"]): MediaVideo[] {
       if (official !== 0) return official;
       const left = VIDEO_TYPE_ORDER[a.type ?? ""] ?? 9;
       const right = VIDEO_TYPE_ORDER[b.type ?? ""] ?? 9;
-      return left - right;
+      if (left !== right) return left - right;
+      const leftDate = Date.parse(a.published_at ?? "") || 0;
+      const rightDate = Date.parse(b.published_at ?? "") || 0;
+      return rightDate - leftDate;
     })
-    .slice(0, 4)
+    .filter((item) => {
+      const key = item.key!;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit)
     .map((item) => ({
       name: item.name?.trim() || item.type || "Video",
       type: item.type || "Video",
@@ -1081,12 +1098,23 @@ function parseDetailVideos(videos?: DetailDTO["videos"]): MediaVideo[] {
     }));
 }
 
-function parseDetailStills(images?: DetailDTO["images"], primaryBackdrop?: string, limit = 16): string[] {
+function mergeDetailImages(...sources: (DetailDTO["images"] | undefined)[]): DetailDTO["images"] {
+  return {
+    stills: sources.flatMap((source) => source?.stills ?? []),
+    backdrops: sources.flatMap((source) => source?.backdrops ?? []),
+  };
+}
+
+function mergeDetailVideos(...sources: (DetailDTO["videos"] | undefined)[]): DetailDTO["videos"] {
+  return { results: sources.flatMap((source) => source?.results ?? []) };
+}
+
+function parseDetailStills(images?: DetailDTO["images"], primaryBackdrop?: string, limit = DETAIL_STILL_LIMIT): string[] {
   const paths: string[] = [];
-  for (const item of images?.stills ?? []) {
+  for (const item of images?.backdrops ?? []) {
     if (item.file_path) paths.push(item.file_path);
   }
-  for (const item of images?.backdrops ?? []) {
+  for (const item of images?.stills ?? []) {
     if (item.file_path) paths.push(item.file_path);
   }
   if (primaryBackdrop) paths.push(primaryBackdrop);
@@ -1189,8 +1217,16 @@ async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
     ? "watch/providers,external_ids,credits,release_dates,videos,images"
     : "watch/providers,external_ids,credits,content_ratings,videos,images";
   const [koResult, enResult] = await Promise.allSettled([
-    tmdb<DetailDTO>(`/${kind}/${id}`, { language: "ko-KR", append_to_response: append }),
-    tmdb<DetailDTO>(`/${kind}/${id}`, { language: "en-US" }),
+    tmdb<DetailDTO>(`/${kind}/${id}`, {
+      language: "ko-KR",
+      append_to_response: append,
+      include_image_language: DETAIL_IMAGE_LANG,
+    }),
+    tmdb<DetailDTO>(`/${kind}/${id}`, {
+      language: "en-US",
+      append_to_response: "videos,images",
+      include_image_language: DETAIL_IMAGE_LANG,
+    }),
   ]);
   if (koResult.status === "rejected" && enResult.status === "rejected") {
     throw koResult.reason;
@@ -1226,8 +1262,8 @@ async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
     tagline: (ko.tagline && ko.tagline.length > 0 ? ko.tagline : en.tagline) ?? "",
     posterPath: ko.poster_path || en.poster_path,
     backdropPath,
-    stills: parseDetailStills(ko.images ?? en.images, backdropPath),
-    videos: parseDetailVideos(ko.videos ?? en.videos),
+    stills: parseDetailStills(mergeDetailImages(ko.images, en.images), backdropPath),
+    videos: parseDetailVideos(mergeDetailVideos(ko.videos, en.videos)),
     genres: (ko.genres ?? en.genres ?? []).map((item) => item.name).filter((name): name is string => Boolean(name)),
     runtimeMinutes: ko.runtime ?? en.runtime ?? ko.episode_run_time?.[0] ?? en.episode_run_time?.[0],
     seasons: ko.number_of_seasons,

@@ -255,6 +255,16 @@ body { background: var(--bg); color: var(--text); }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.video-kind {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--gold);
+  font-size: 10px;
+  vertical-align: baseline;
+}
 .video-preview {
   position: relative;
   display: block;
