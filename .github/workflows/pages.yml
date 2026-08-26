@@ -34,17 +34,26 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Configure pregenerate regions
+      - name: Configure recommendation data step
         run: |
-          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "PREGENERATE_REGIONS=KR,US,JP,TW,HK,GB" >> "$GITHUB_ENV"
-            echo "PREGENERATE_SKIP_MERGE=1" >> "$GITHUB_ENV"
-          elif [ "$(date -u +%H)" = "15" ]; then
-            echo "PREGENERATE_REGIONS=US,JP,TW,HK,GB" >> "$GITHUB_ENV"
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            if [ "$(date -u +%H)" = "15" ]; then
+              echo "PREGENERATE_REGIONS=US,JP,TW,HK,GB" >> "$GITHUB_ENV"
+            else
+              echo "PREGENERATE_REGIONS=KR" >> "$GITHUB_ENV"
+            fi
+            echo "RECOMMEND_DATA_STEP=pregenerate" >> "$GITHUB_ENV"
           else
-            echo "PREGENERATE_REGIONS=KR" >> "$GITHUB_ENV"
+            echo "RECOMMEND_DATA_STEP=merge" >> "$GITHUB_ENV"
           fi
       - run: npm ci
+      - name: Prepare recommendation JSON
+        run: |
+          if [ "$RECOMMEND_DATA_STEP" = "pregenerate" ]; then
+            npm run pregenerate
+          else
+            npm run merge-recommendations
+          fi
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3
         with:

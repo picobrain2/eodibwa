@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "vite",
     "pregenerate": "esbuild scripts/pregenerate-recommendations.ts --bundle --platform=node --format=esm --outfile=scripts/.pregenerate.mjs && node scripts/.pregenerate.mjs",
-    "build": "npm run pregenerate && tsc --noEmit && vite build",
+    "merge-recommendations": "PREGENERATE_MERGE_ONLY=1 npm run pregenerate",
+    "build": "tsc --noEmit && vite build",
+    "build:all": "npm run pregenerate && npm run build",
     "preview": "vite preview"
   },
   "devDependencies": {

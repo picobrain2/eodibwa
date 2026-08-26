@@ -101,19 +101,28 @@ async function generateRegion(region: string): Promise<RecommendBundle> {
 }
 
 async function main(): Promise<void> {
+  await mkdir(outDir, { recursive: true });
+
+  const mergeOnly = process.env.PREGENERATE_MERGE_ONLY === "1";
+  const baseUrl = process.env.RECOMMEND_BUNDLE_BASE_URL ?? DEFAULT_BUNDLE_BASE_URL;
+
+  if (mergeOnly) {
+    console.log(`merge-recommendations: fetching ${RECOMMEND_REGIONS.join(", ")} from ${baseUrl}`);
+    await fetchExistingBundles(baseUrl, [...RECOMMEND_REGIONS]);
+    console.log("merge-recommendations: done.");
+    return;
+  }
+
   if (!process.env.VITE_TMDB_KEY) {
     console.warn("pregenerate: VITE_TMDB_KEY not set — skipping (client will use live API).");
     return;
   }
-
-  await mkdir(outDir, { recursive: true });
 
   const targetRegions = parseTargetRegions();
   const mergeRegions = RECOMMEND_REGIONS.filter((region) => !targetRegions.includes(region));
   const skipMerge = process.env.PREGENERATE_SKIP_MERGE === "1" || mergeRegions.length === 0;
 
   if (!skipMerge) {
-    const baseUrl = process.env.RECOMMEND_BUNDLE_BASE_URL ?? DEFAULT_BUNDLE_BASE_URL;
     console.log(`pregenerate: merging ${mergeRegions.join(", ")} from ${baseUrl}`);
     await fetchExistingBundles(baseUrl, mergeRegions);
   }
