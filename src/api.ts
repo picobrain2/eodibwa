@@ -2,7 +2,7 @@ import { lookupKMDB } from "./kmdb";
 import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants, sortableTitle } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
-import type { CastMember, FilmographySort, MediaKind, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
+import type { CastMember, FilmographySort, MediaKind, MediaVideo, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
 
 const TMDB = "https://api.themoviedb.org/3";
 
@@ -135,7 +135,12 @@ export function isKnownStageNameQuery(query: string): boolean {
   return Boolean(STAGE_NAME_PERSON_IDS[compact(query)]);
 }
 
-export function isPersonSearchTitleNoise(hit: SearchHit, query: string): boolean {
+export function isPersonSearchTitleNoise(
+  hit: SearchHit,
+  query: string,
+  options: { forPersonSearch?: boolean } = {},
+): boolean {
+  if (!options.forPersonSearch) return false;
   if (hit.matchedPerson) return false;
   const q = compact(query);
   if (!q) return false;
@@ -158,7 +163,7 @@ export function isPersonSearchTitleNoise(hit: SearchHit, query: string): boolean
 }
 
 function filterPersonSearchTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
-  return hits.filter((hit) => !isPersonSearchTitleNoise(hit, query));
+  return hits.filter((hit) => !isPersonSearchTitleNoise(hit, query, { forPersonSearch: true }));
 }
 
 function searchItemKey(item: SearchItem): string | undefined {
@@ -966,10 +971,7 @@ function titleSearchVariants(query: string): string[] {
 export async function searchTitleHits(query: string): Promise<SearchHit[]> {
   if (isKnownStageNameQuery(query)) return [];
   const hits = sortSearchHits(
-    filterPersonSearchTitleNoise(
-      filterShortLatinTitleHits(await collect(titleSearchVariants(query)), query),
-      query,
-    ),
+    filterShortLatinTitleHits(await collect(titleSearchVariants(query)), query),
     query,
   );
   return localizeHitTitles(hits);
@@ -1006,6 +1008,7 @@ interface DetailDTO {
   overview?: string;
   tagline?: string;
   poster_path?: string;
+  backdrop_path?: string;
   release_date?: string;
   first_air_date?: string;
   runtime?: number;
@@ -1036,6 +1039,62 @@ interface DetailDTO {
   };
   release_dates?: { results?: { iso_3166_1: string; release_dates?: { certification?: string }[] }[] };
   content_ratings?: { results?: { iso_3166_1: string; rating?: string }[] };
+  videos?: {
+    results?: {
+      key?: string;
+      site?: string;
+      type?: string;
+      name?: string;
+      official?: boolean;
+    }[];
+  };
+  images?: {
+    backdrops?: { file_path?: string }[];
+    stills?: { file_path?: string }[];
+  };
+}
+
+const VIDEO_TYPE_ORDER: Record<string, number> = {
+  Trailer: 0,
+  Teaser: 1,
+  Clip: 2,
+  Featurette: 3,
+  "Behind the Scenes": 4,
+};
+
+function parseDetailVideos(videos?: DetailDTO["videos"]): MediaVideo[] {
+  return (videos?.results ?? [])
+    .filter((item) => item.site === "YouTube" && item.key)
+    .sort((a, b) => {
+      const official = Number(Boolean(b.official)) - Number(Boolean(a.official));
+      if (official !== 0) return official;
+      const left = VIDEO_TYPE_ORDER[a.type ?? ""] ?? 9;
+      const right = VIDEO_TYPE_ORDER[b.type ?? ""] ?? 9;
+      return left - right;
+    })
+    .slice(0, 4)
+    .map((item) => ({
+      name: item.name?.trim() || item.type || "Video",
+      type: item.type || "Video",
+      url: `https://www.youtube.com/watch?v=${item.key}`,
+      embedURL: `https://www.youtube-nocookie.com/embed/${item.key}`,
+    }));
+}
+
+function parseDetailStills(images?: DetailDTO["images"], limit = 12): string[] {
+  const paths: string[] = [];
+  for (const item of images?.stills ?? []) {
+    if (item.file_path) paths.push(item.file_path);
+  }
+  for (const item of images?.backdrops ?? []) {
+    if (item.file_path) paths.push(item.file_path);
+  }
+  const seen = new Set<string>();
+  return paths.filter((path) => {
+    if (seen.has(path)) return false;
+    seen.add(path);
+    return true;
+  }).slice(0, limit);
 }
 
 function availability(envelope?: DetailDTO["watch/providers"]): RegionAvailability[] {
@@ -1125,7 +1184,9 @@ export async function fetchDetail(kind: MediaKind, id: number): Promise<TitleDet
 }
 
 async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
-  const append = kind === "movie" ? "watch/providers,external_ids,credits,release_dates" : "watch/providers,external_ids,credits,content_ratings";
+  const append = kind === "movie"
+    ? "watch/providers,external_ids,credits,release_dates,videos,images"
+    : "watch/providers,external_ids,credits,content_ratings,videos,images";
   const [koResult, enResult] = await Promise.allSettled([
     tmdb<DetailDTO>(`/${kind}/${id}`, { language: "ko-KR", append_to_response: append }),
     tmdb<DetailDTO>(`/${kind}/${id}`, { language: "en-US" }),
@@ -1162,6 +1223,9 @@ async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
     overview,
     tagline: (ko.tagline && ko.tagline.length > 0 ? ko.tagline : en.tagline) ?? "",
     posterPath: ko.poster_path || en.poster_path,
+    backdropPath: ko.backdrop_path || en.backdrop_path,
+    stills: parseDetailStills(ko.images ?? en.images),
+    videos: parseDetailVideos(ko.videos ?? en.videos),
     genres: (ko.genres ?? en.genres ?? []).map((item) => item.name).filter((name): name is string => Boolean(name)),
     runtimeMinutes: ko.runtime ?? en.runtime ?? ko.episode_run_time?.[0] ?? en.episode_run_time?.[0],
     seasons: ko.number_of_seasons,

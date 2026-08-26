@@ -53,6 +53,13 @@ export interface CastMember {
   profilePath?: string;
 }
 
+export interface MediaVideo {
+  name: string;
+  type: string;
+  url: string;
+  embedURL: string;
+}
+
 export interface TitleDetail {
   tmdbID: number;
   kind: MediaKind;
@@ -62,6 +69,9 @@ export interface TitleDetail {
   overview: string;
   tagline: string;
   posterPath?: string;
+  backdropPath?: string;
+  stills: string[];
+  videos: MediaVideo[];
   genres: string[];
   runtimeMinutes?: number;
   seasons?: number;

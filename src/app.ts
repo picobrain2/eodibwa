@@ -263,7 +263,7 @@ function isInTheaters(hit: SearchHit): boolean {
 function shouldDeferDetailForPersonSearch(hit: SearchHit | undefined, query: string): boolean {
   if (!hit || hit.matchedPerson) return false;
   if (isKnownStageNameQuery(query)) return true;
-  if (isPersonSearchTitleNoise(hit, query)) return true;
+  if (isPersonSearchTitleNoise(hit, query, { forPersonSearch: true })) return true;
   if (containsHangul(query) && compact(query).length <= 4) return true;
   return false;
 }
@@ -824,7 +824,10 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
   const local = d.availability.find((item) => item.countryCode === region);
   const offers: WatchOffer[] = ["flatrate", "free", "ads", "rent", "buy"];
   const theaterBadge = d.kind === "movie" && d.inTheaters ? theaterBadgeHTML() : "";
+  const backdrop = posterURL(d.backdropPath, "w1280");
+  const primaryVideo = d.videos[0];
   return `
+    ${backdrop ? `<div class="detail-backdrop"><img alt="" src="${backdrop}" loading="lazy" decoding="async" /></div>` : ""}
     <div class="header">
       <img class="poster" alt="" src="${posterURL(d.posterPath, "w500") ?? ""}" loading="lazy" decoding="async" />
       <div>
@@ -847,6 +850,34 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
       </div>
       ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 OMDb 연동 시 표시됩니다.</p>` : ""}
     </section>
+    ${primaryVideo ? `
+    <section class="section">
+      <h2>예고편</h2>
+      <div class="video-embed">
+        <iframe
+          src="${primaryVideo.embedURL}"
+          title="${escapeHTML(primaryVideo.name)}"
+          loading="lazy"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          referrerpolicy="strict-origin-when-cross-origin"
+          allowfullscreen
+        ></iframe>
+      </div>
+      ${d.videos.length > 1 ? `
+      <div class="video-links">
+        ${d.videos.map((video, index) => `
+          <a href="${video.url}" target="_blank" rel="noreferrer"${index === 0 ? ' aria-current="true"' : ""}>
+            ${escapeHTML(video.name)}
+          </a>`).join("")}
+      </div>` : ""}
+    </section>` : ""}
+    ${d.stills.length ? `
+    <section class="section">
+      <h2>스틸컷</h2>
+      <div class="stills">
+        ${d.stills.map((path) => `<img alt="" src="${posterURL(path, "w780") ?? ""}" loading="lazy" decoding="async" />`).join("")}
+      </div>
+    </section>` : ""}
     ${loadingReviews ? `
     <section class="section">
       <h2>인기 평가</h2>
@@ -881,7 +912,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
       ${d.kmdbURL ? `<a href="${d.kmdbURL}" target="_blank" rel="noreferrer">KMDb에서 열기</a>` : ""}
       ${d.imdbID ? `<a href="https://www.imdb.com/title/${d.imdbID}/" target="_blank" rel="noreferrer">IMDb에서 열기</a>` : ""}
       ${d.wikipediaURL ? `<a href="${d.wikipediaURL}" target="_blank" rel="noreferrer">위키백과</a>` : ""}
-      <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(`${primary} 예고편 trailer`)}" target="_blank" rel="noreferrer">예고편</a>
+      ${!primaryVideo ? `<a href="https://www.youtube.com/results?search_query=${encodeURIComponent(`${primary} 예고편 trailer`)}" target="_blank" rel="noreferrer">예고편</a>` : ""}
       ${d.homepage ? `<a href="${d.homepage}" target="_blank" rel="noreferrer">공식 사이트</a>` : ""}
     </section>
     <p class="attr">작품 정보 TMDB${settings.hasKMDB ? " · 한국영화 KMDb" : ""} · 시리즈 TVMaze · 시청 가능 플랫폼 JustWatch</p>
