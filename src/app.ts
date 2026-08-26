@@ -52,14 +52,6 @@ function emptyDetailHTML(): string {
   return `<div class="empty">왼쪽에서 작품을 고르거나<br>「오늘 뭐 볼까」 추천을 눌러 보세요.</div>`;
 }
 
-function recommendEntryHTML(): string {
-  return `
-    <div class="recommend-entry">
-      <button class="primary recommend-open" type="button" id="open-recommend">오늘 뭐 볼까</button>
-      <p class="hint">OTT별 급상승 · 이번 주 인기 작품</p>
-    </div>`;
-}
-
 function allRecommendHits(): SearchHit[] {
   return recommendProviders.flatMap((group) => group.hits);
 }
@@ -88,13 +80,6 @@ function syncMobileViewFromHistory(state: { mobile?: MobileView } | null): void 
 function pushMobileView(view: MobileView): void {
   if (!isMobileLayout() || suppressHistory) return;
   history.pushState({ mobile: view }, "");
-}
-
-function openRecommendPage(): void {
-  showRecommendPage = true;
-  ensureRecommendationsLoaded();
-  pushMobileView("recommend");
-  updateRecommendPage();
 }
 
 function openDetailPage(): void {
@@ -469,6 +454,33 @@ function bindVideoPreview(root: ParentNode): void {
   });
 }
 
+function trailersSectionHTML(videos: TitleDetail["videos"]): string {
+  if (!videos.length) return "";
+  return `
+    <section class="section">
+      <h2>예고편</h2>
+      <div class="video-row">
+        ${videos.map((video) => {
+          const thumb = youtubeThumbURL(video.embedURL);
+          return `
+          <button
+            type="button"
+            class="video-open"
+            data-video-embed="${escapeHTML(video.embedURL)}"
+            data-video-title="${escapeHTML(video.name)}"
+            aria-label="${escapeHTML(video.name)} 재생"
+          >
+            <span class="video-preview">
+              ${thumb ? `<img alt="" src="${thumb}" loading="lazy" decoding="async" />` : ""}
+              <span class="video-play" aria-hidden="true">▶</span>
+            </span>
+            <span class="video-label">${escapeHTML(video.name)}</span>
+          </button>`;
+        }).join("")}
+      </div>
+    </section>`;
+}
+
 function personSearchButton(name: string, className = "person-search"): string {
   const trimmed = name.trim();
   if (!trimmed) return "";
@@ -693,21 +705,15 @@ function updateResults(): void {
   const list = filteredHits();
   const showRecommend = !query.trim() && !hits.length && !searching;
   if (showRecommend) ensureRecommendationsLoaded();
-  const mobile = isMobileLayout();
   resultsEl.innerHTML = `
     ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
     ${loadingPersonSearch ? `<div class="loading inline">출연작 불러오는 중…</div>` : ""}
     ${error && !hits.length && query.trim() ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
-    ${showRecommend && mobile ? recommendEntryHTML() : ""}
-    ${showRecommend && !mobile ? recommendHTML() : ""}
+    ${showRecommend ? recommendHTML() : ""}
     ${list.map((hit) => hitButton(hit, selected?.id)).join("")}
   `;
   bindHits(resultsEl);
-  bindRecommendControls(resultsEl);
-  bindProviderControls(resultsEl);
-  resultsEl.querySelector("#open-recommend")?.addEventListener("click", () => {
-    openRecommendPage();
-  });
+  bindRecommendUI(resultsEl);
   updateFilmographySortControl();
 }
 
@@ -879,8 +885,6 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
   const offers: WatchOffer[] = ["flatrate", "free", "ads", "rent", "buy"];
   const theaterBadge = d.kind === "movie" && d.inTheaters ? theaterBadgeHTML() : "";
   const backdrop = posterURL(d.backdropPath, "w1280");
-  const primaryVideo = d.videos[0];
-  const videoThumb = primaryVideo ? youtubeThumbURL(primaryVideo.embedURL) : undefined;
   return `
     ${backdrop ? `<div class="detail-backdrop"><img alt="" src="${backdrop}" loading="lazy" decoding="async" /></div>` : ""}
     <div class="header">
@@ -905,42 +909,10 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
       </div>
       ${!settings.hasOMDb ? `<p class="hint">IMDb · 로튼토마토 점수는 OMDb 연동 시 표시됩니다.</p>` : ""}
     </section>
-    ${primaryVideo ? `
-    <section class="section">
-      <h2>예고편</h2>
-      <button
-        type="button"
-        class="video-open"
-        data-video-embed="${escapeHTML(primaryVideo.embedURL)}"
-        data-video-title="${escapeHTML(primaryVideo.name)}"
-        aria-label="${escapeHTML(primaryVideo.name)} 재생"
-      >
-        <span class="video-preview">
-          ${videoThumb ? `<img alt="" src="${videoThumb}" loading="lazy" decoding="async" />` : ""}
-          <span class="video-play" aria-hidden="true">▶</span>
-        </span>
-      </button>
-      <div class="video-embed video-embed--inline">
-        <iframe
-          src="${primaryVideo.embedURL}"
-          title="${escapeHTML(primaryVideo.name)}"
-          loading="lazy"
-          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-          referrerpolicy="strict-origin-when-cross-origin"
-          allowfullscreen
-        ></iframe>
-      </div>
-      ${d.videos.length > 1 ? `
-      <div class="video-links">
-        ${d.videos.map((video, index) => `
-          <a href="${video.url}" target="_blank" rel="noreferrer"${index === 0 ? ' aria-current="true"' : ""}>
-            ${escapeHTML(video.name)}
-          </a>`).join("")}
-      </div>` : ""}
-    </section>` : ""}
+    ${trailersSectionHTML(d.videos)}
     ${d.stills.length ? `
     <section class="section">
-      <h2>스틸컷</h2>
+      <h2>스틸컷 · 배경</h2>
       <div class="stills">
         ${d.stills.map((path) => `<img alt="" src="${posterURL(path, "w780") ?? ""}" loading="lazy" decoding="async" />`).join("")}
       </div>
@@ -979,7 +951,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
       ${d.kmdbURL ? `<a href="${d.kmdbURL}" target="_blank" rel="noreferrer">KMDb에서 열기</a>` : ""}
       ${d.imdbID ? `<a href="https://www.imdb.com/title/${d.imdbID}/" target="_blank" rel="noreferrer">IMDb에서 열기</a>` : ""}
       ${d.wikipediaURL ? `<a href="${d.wikipediaURL}" target="_blank" rel="noreferrer">위키백과</a>` : ""}
-      ${!primaryVideo ? `<a href="https://www.youtube.com/results?search_query=${encodeURIComponent(`${primary} 예고편 trailer`)}" target="_blank" rel="noreferrer">예고편</a>` : ""}
+      ${!d.videos.length ? `<a href="https://www.youtube.com/results?search_query=${encodeURIComponent(`${primary} 예고편 trailer`)}" target="_blank" rel="noreferrer">예고편 검색</a>` : `<a href="${d.videos[0]?.url ?? "#"}" target="_blank" rel="noreferrer">YouTube에서 열기</a>`}
       ${d.homepage ? `<a href="${d.homepage}" target="_blank" rel="noreferrer">공식 사이트</a>` : ""}
     </section>
     <p class="attr">작품 정보 TMDB${settings.hasKMDB ? " · 한국영화 KMDb" : ""} · 시리즈 TVMaze · 시청 가능 플랫폼 JustWatch</p>

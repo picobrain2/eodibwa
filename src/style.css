@@ -228,11 +228,32 @@ body { background: var(--bg); color: var(--text); }
   border: 0;
 }
 .video-open {
-  display: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
   border: 0;
   padding: 0;
   background: none;
   cursor: pointer;
+  flex: 0 0 auto;
+}
+.video-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.video-label {
+  display: block;
+  width: 235px;
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.35;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .video-preview {
   position: relative;
@@ -258,10 +279,6 @@ body { background: var(--bg); color: var(--text); }
   color: #fff;
   font-size: 28px;
 }
-.detail .video-open { display: block; }
-.detail .video-embed--inline { display: none; }
-.detail-page-body .video-open { display: none; }
-.detail-page-body .video-embed--inline { display: block; }
 .video-modal {
   width: min(720px, 100%);
   background: var(--panel);

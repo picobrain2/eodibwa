@@ -1081,7 +1081,7 @@ function parseDetailVideos(videos?: DetailDTO["videos"]): MediaVideo[] {
     }));
 }
 
-function parseDetailStills(images?: DetailDTO["images"], limit = 12): string[] {
+function parseDetailStills(images?: DetailDTO["images"], primaryBackdrop?: string, limit = 16): string[] {
   const paths: string[] = [];
   for (const item of images?.stills ?? []) {
     if (item.file_path) paths.push(item.file_path);
@@ -1089,6 +1089,7 @@ function parseDetailStills(images?: DetailDTO["images"], limit = 12): string[] {
   for (const item of images?.backdrops ?? []) {
     if (item.file_path) paths.push(item.file_path);
   }
+  if (primaryBackdrop) paths.push(primaryBackdrop);
   const seen = new Set<string>();
   return paths.filter((path) => {
     if (seen.has(path)) return false;
@@ -1213,6 +1214,7 @@ async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
     .slice(0, 8)
     .map((person) => ({ id: person.id, name: person.name ?? "", role: formatCreditRole(person.character), profilePath: person.profile_path }))
     .filter((person) => person.name);
+  const backdropPath = ko.backdrop_path || en.backdrop_path;
 
   return {
     tmdbID: ko.id,
@@ -1223,8 +1225,8 @@ async function buildDetail(kind: MediaKind, id: number): Promise<TitleDetail> {
     overview,
     tagline: (ko.tagline && ko.tagline.length > 0 ? ko.tagline : en.tagline) ?? "",
     posterPath: ko.poster_path || en.poster_path,
-    backdropPath: ko.backdrop_path || en.backdrop_path,
-    stills: parseDetailStills(ko.images ?? en.images),
+    backdropPath,
+    stills: parseDetailStills(ko.images ?? en.images, backdropPath),
     videos: parseDetailVideos(ko.videos ?? en.videos),
     genres: (ko.genres ?? en.genres ?? []).map((item) => item.name).filter((name): name is string => Boolean(name)),
     runtimeMinutes: ko.runtime ?? en.runtime ?? ko.episode_run_time?.[0] ?? en.episode_run_time?.[0],
