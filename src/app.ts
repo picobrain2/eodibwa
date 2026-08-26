@@ -416,6 +416,59 @@ function escapeHTML(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;");
 }
 
+function youtubeThumbURL(embedURL: string): string | undefined {
+  const key = embedURL.match(/\/embed\/([^/?]+)/)?.[1];
+  return key ? `https://img.youtube.com/vi/${key}/hqdefault.jpg` : undefined;
+}
+
+function openVideoModal(embedURL: string, title: string): void {
+  document.querySelector(".video-modal-bg")?.remove();
+  const autoplayURL = embedURL.includes("?") ? `${embedURL}&autoplay=1` : `${embedURL}?autoplay=1`;
+  const bg = document.createElement("div");
+  bg.className = "modal-bg video-modal-bg";
+  bg.innerHTML = `
+    <div class="video-modal" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}">
+      <div class="video-modal-head">
+        <h2>${escapeHTML(title)}</h2>
+        <button type="button" class="ghost video-modal-close">닫기</button>
+      </div>
+      <div class="video-embed video-embed--large">
+        <iframe
+          src="${autoplayURL}"
+          title="${escapeHTML(title)}"
+          allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+          referrerpolicy="strict-origin-when-cross-origin"
+          allowfullscreen
+        ></iframe>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(bg);
+  const close = () => bg.remove();
+  bg.querySelector<HTMLButtonElement>(".video-modal-close")?.addEventListener("click", close);
+  bg.addEventListener("click", (event) => {
+    if (event.target === bg) close();
+  });
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      close();
+      document.removeEventListener("keydown", onKey);
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  bg.querySelector<HTMLButtonElement>(".video-modal-close")?.focus();
+}
+
+function bindVideoPreview(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>(".video-open").forEach((button) => {
+    button.onclick = () => {
+      const embedURL = button.dataset.videoEmbed;
+      const title = button.dataset.videoTitle ?? "예고편";
+      if (embedURL) openVideoModal(embedURL, title);
+    };
+  });
+}
+
 function personSearchButton(name: string, className = "person-search"): string {
   const trimmed = name.trim();
   if (!trimmed) return "";
@@ -705,6 +758,7 @@ function bindDetailControls(root: ParentNode): void {
     updateDetail();
   });
   bindPersonSearch(root);
+  bindVideoPreview(root);
 }
 
 function updateDetail(): void {
@@ -826,6 +880,7 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
   const theaterBadge = d.kind === "movie" && d.inTheaters ? theaterBadgeHTML() : "";
   const backdrop = posterURL(d.backdropPath, "w1280");
   const primaryVideo = d.videos[0];
+  const videoThumb = primaryVideo ? youtubeThumbURL(primaryVideo.embedURL) : undefined;
   return `
     ${backdrop ? `<div class="detail-backdrop"><img alt="" src="${backdrop}" loading="lazy" decoding="async" /></div>` : ""}
     <div class="header">
@@ -853,7 +908,19 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
     ${primaryVideo ? `
     <section class="section">
       <h2>예고편</h2>
-      <div class="video-embed">
+      <button
+        type="button"
+        class="video-open"
+        data-video-embed="${escapeHTML(primaryVideo.embedURL)}"
+        data-video-title="${escapeHTML(primaryVideo.name)}"
+        aria-label="${escapeHTML(primaryVideo.name)} 재생"
+      >
+        <span class="video-preview">
+          ${videoThumb ? `<img alt="" src="${videoThumb}" loading="lazy" decoding="async" />` : ""}
+          <span class="video-play" aria-hidden="true">▶</span>
+        </span>
+      </button>
+      <div class="video-embed video-embed--inline">
         <iframe
           src="${primaryVideo.embedURL}"
           title="${escapeHTML(primaryVideo.name)}"
