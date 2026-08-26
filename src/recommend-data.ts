@@ -12,7 +12,14 @@ let cachedBundle: RecommendBundle | undefined;
 let cachedRegion: string | undefined;
 let inflight: Promise<RecommendBundle | null> | undefined;
 
-export const RECOMMEND_BUNDLE_TTL_MS = 4 * 60 * 60 * 1000;
+export const RECOMMEND_BUNDLE_TTL_KR_MS = 12 * 60 * 60 * 1000;
+export const RECOMMEND_BUNDLE_TTL_OVERSEAS_MS = 24 * 60 * 60 * 1000;
+/** @deprecated use recommendBundleTTL(region) */
+export const RECOMMEND_BUNDLE_TTL_MS = RECOMMEND_BUNDLE_TTL_KR_MS;
+
+export function recommendBundleTTL(region: string): number {
+  return region === "KR" ? RECOMMEND_BUNDLE_TTL_KR_MS : RECOMMEND_BUNDLE_TTL_OVERSEAS_MS;
+}
 
 export function clearRecommendBundleCache(): void {
   cachedBundle = undefined;
@@ -20,10 +27,11 @@ export function clearRecommendBundleCache(): void {
   inflight = undefined;
 }
 
-export function recommendBundleFresh(bundle: RecommendBundle, maxAgeMs = RECOMMEND_BUNDLE_TTL_MS): boolean {
+export function recommendBundleFresh(bundle: RecommendBundle, maxAgeMs?: number): boolean {
   const generated = Date.parse(bundle.generatedAt);
   if (Number.isNaN(generated)) return false;
-  return Date.now() - generated < maxAgeMs;
+  const ttl = maxAgeMs ?? recommendBundleTTL(bundle.region);
+  return Date.now() - generated < ttl;
 }
 
 export function providersForGenre(bundle: RecommendBundle, genreID: number): RecommendProvider[] {

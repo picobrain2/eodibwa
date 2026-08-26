@@ -5,7 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
   schedule:
-    - cron: "0 */4 * * *"
+    # KR: every 12 hours (00:00, 12:00 UTC)
+    - cron: "0 */12 * * *"
+    # Overseas: daily at 15:00 UTC (00:00 KST)
+    - cron: "0 15 * * *"
 
 permissions:
   contents: read
@@ -24,12 +27,23 @@ jobs:
       VITE_OMDB_KEY: ${{ secrets.VITE_OMDB_KEY }}
       VITE_MOTN_KEY: ${{ secrets.VITE_MOTN_KEY }}
       VITE_KMDB_KEY: ${{ secrets.VITE_KMDB_KEY }}
+      RECOMMEND_BUNDLE_BASE_URL: https://picobrain2.github.io/eodibwa
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      - name: Configure pregenerate regions
+        run: |
+          if [ "${{ github.event_name }}" = "push" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "PREGENERATE_REGIONS=KR,US,JP,TW,HK,GB" >> "$GITHUB_ENV"
+            echo "PREGENERATE_SKIP_MERGE=1" >> "$GITHUB_ENV"
+          elif [ "$(date -u +%H)" = "15" ]; then
+            echo "PREGENERATE_REGIONS=US,JP,TW,HK,GB" >> "$GITHUB_ENV"
+          else
+            echo "PREGENERATE_REGIONS=KR" >> "$GITHUB_ENV"
+          fi
       - run: npm ci
       - run: npm run build
       - uses: actions/upload-pages-artifact@v3

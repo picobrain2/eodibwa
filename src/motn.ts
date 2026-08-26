@@ -4,7 +4,12 @@ import type { RecommendGenre } from "./recommend";
 import type { MediaKind, SearchHit } from "./types";
 
 const BASE = "https://api.movieofthenight.com/v4";
-const CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const CACHE_TTL_KR_MS = 12 * 60 * 60 * 1000;
+const CACHE_TTL_OVERSEAS_MS = 24 * 60 * 60 * 1000;
+
+function motnCacheTTL(region: string): number {
+  return region === "KR" ? CACHE_TTL_KR_MS : CACHE_TTL_OVERSEAS_MS;
+}
 const STORAGE_KEY = "eodibwa.motnCache.v1";
 
 export const MOTN_TMDB_PROVIDER: Record<number, string> = {
@@ -113,7 +118,7 @@ function writePersisted(cache: MotnRegionCache): void {
 }
 
 function isFresh(cache: MotnRegionCache, region: string): boolean {
-  return cache.region === region && Date.now() - cache.fetchedAt < CACHE_TTL_MS;
+  return cache.region === region && Date.now() - cache.fetchedAt < motnCacheTTL(region);
 }
 
 function totalShows(cache: MotnRegionCache): number {

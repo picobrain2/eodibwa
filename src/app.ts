@@ -543,11 +543,12 @@ function mount(): void {
 
 function recommendHintText(): string {
   if (recommendFromBundle) {
-    return "Netflix·Disney+ MOTN Top 10과 TVING·Wavve 등 OTT 추천을 서버 JSON으로 제공합니다. 4시간마다 자동 갱신됩니다.";
+    return "Netflix·Disney+ MOTN Top 10과 TVING·Wavve 등 OTT 추천을 서버 JSON으로 제공합니다. KR 12시간 · 해외 매일 갱신됩니다.";
   }
   if (settings.hasMOTN) {
     if (motnCacheFresh(settings.region)) {
-      return "Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 6시간 캐시), TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작입니다.";
+      const cacheHours = settings.region === "KR" ? "12시간" : "24시간";
+      return `Netflix·Disney+ 등은 플랫폼 공식 Top 10(브라우저 ${cacheHours} 캐시), TVING·Wavve·Watcha·쿠팡플레이는 TMDB 급상승+최근 한국 인기작입니다.`;
     }
     if (loadingRecommend || loadingProviderRecommend) {
       return "Netflix·Disney+ 공식 Top 10을 불러오는 중…";
