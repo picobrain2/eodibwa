@@ -406,16 +406,32 @@ function youtubeThumbURL(embedURL: string): string | undefined {
   return key ? `https://img.youtube.com/vi/${key}/hqdefault.jpg` : undefined;
 }
 
+function bindModalDismiss(bg: HTMLElement, focusSelector = ".media-modal-close"): void {
+  const close = () => bg.remove();
+  bg.querySelector<HTMLButtonElement>(focusSelector)?.addEventListener("click", close);
+  bg.addEventListener("click", (event) => {
+    if (event.target === bg) close();
+  });
+  const onKey = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      close();
+      document.removeEventListener("keydown", onKey);
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  bg.querySelector<HTMLElement>(focusSelector)?.focus();
+}
+
 function openVideoModal(embedURL: string, title: string): void {
-  document.querySelector(".video-modal-bg")?.remove();
+  document.querySelector(".media-modal-bg")?.remove();
   const autoplayURL = embedURL.includes("?") ? `${embedURL}&autoplay=1` : `${embedURL}?autoplay=1`;
   const bg = document.createElement("div");
-  bg.className = "modal-bg video-modal-bg";
+  bg.className = "modal-bg media-modal-bg";
   bg.innerHTML = `
     <div class="video-modal" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}">
       <div class="video-modal-head">
         <h2>${escapeHTML(title)}</h2>
-        <button type="button" class="ghost video-modal-close">닫기</button>
+        <button type="button" class="ghost media-modal-close">닫기</button>
       </div>
       <div class="video-embed video-embed--large">
         <iframe
@@ -429,19 +445,33 @@ function openVideoModal(embedURL: string, title: string): void {
     </div>
   `;
   document.body.appendChild(bg);
-  const close = () => bg.remove();
-  bg.querySelector<HTMLButtonElement>(".video-modal-close")?.addEventListener("click", close);
-  bg.addEventListener("click", (event) => {
-    if (event.target === bg) close();
+  bindModalDismiss(bg);
+}
+
+function openImageModal(imageURL: string, title = "스틸컷 · 배경"): void {
+  document.querySelector(".media-modal-bg")?.remove();
+  const bg = document.createElement("div");
+  bg.className = "modal-bg media-modal-bg";
+  bg.innerHTML = `
+    <div class="image-modal" role="dialog" aria-modal="true" aria-label="${escapeHTML(title)}">
+      <div class="video-modal-head">
+        <h2>${escapeHTML(title)}</h2>
+        <button type="button" class="ghost media-modal-close">닫기</button>
+      </div>
+      <img class="image-modal-photo" alt="" src="${imageURL}" />
+    </div>
+  `;
+  document.body.appendChild(bg);
+  bindModalDismiss(bg);
+}
+
+function bindStillPreview(root: ParentNode): void {
+  root.querySelectorAll<HTMLButtonElement>(".still-open").forEach((button) => {
+    button.onclick = () => {
+      const src = button.dataset.stillSrc;
+      if (src) openImageModal(src);
+    };
   });
-  const onKey = (event: KeyboardEvent) => {
-    if (event.key === "Escape") {
-      close();
-      document.removeEventListener("keydown", onKey);
-    }
-  };
-  document.addEventListener("keydown", onKey);
-  bg.querySelector<HTMLButtonElement>(".video-modal-close")?.focus();
 }
 
 function bindVideoPreview(root: ParentNode): void {
@@ -765,6 +795,7 @@ function bindDetailControls(root: ParentNode): void {
   });
   bindPersonSearch(root);
   bindVideoPreview(root);
+  bindStillPreview(root);
 }
 
 function updateDetail(): void {
@@ -914,7 +945,14 @@ function detailHTML(options?: { forOverlay?: boolean }): string {
     <section class="section">
       <h2>스틸컷 · 배경</h2>
       <div class="stills">
-        ${d.stills.map((path) => `<img alt="" src="${posterURL(path, "w780") ?? ""}" loading="lazy" decoding="async" />`).join("")}
+        ${d.stills.map((path) => {
+          const thumb = posterURL(path, "w780") ?? "";
+          const full = posterURL(path, "w1280") ?? thumb;
+          return `
+          <button type="button" class="still-open" data-still-src="${full}" aria-label="스틸컷 · 배경 크게 보기">
+            <img alt="" src="${thumb}" loading="lazy" decoding="async" />
+          </button>`;
+        }).join("")}
       </div>
     </section>` : ""}
     ${loadingReviews ? `
