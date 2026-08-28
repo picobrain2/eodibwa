@@ -1,4 +1,4 @@
-import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, parseTitleSearchQuery, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortFilmographyHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
+import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, parseTitleSearchQuery, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, shouldIncludePersonFilmography, sortFilmographyHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
@@ -1110,6 +1110,18 @@ async function runSearch(raw: string): Promise<void> {
     loadingPersonSearch = true;
     updateResults();
 
+    if (!shouldIncludePersonFilmography(trimmed, titleHits)) {
+      loadingPersonSearch = false;
+      updateResults();
+      void refineSearchWithImdb(titleHits, trimmed).then((refined) => {
+        if (generation !== searchGeneration) return;
+        if (searchInput.value.trim() !== trimmed) return;
+        hits = prioritizeNowPlaying(refined, nowPlayingIDs);
+        updateResults();
+      });
+      return;
+    }
+
     void (async () => {
       try {
         const quickHits = await searchPersonKnownHits(trimmed);
@@ -1198,18 +1210,24 @@ async function applyPersonFilmography(
   generation: number,
   previousSelected?: string,
 ): Promise<SearchHit[]> {
+  if (!shouldIncludePersonFilmography(trimmed, titleHits)) {
+    hits = prioritizeNowPlaying(titleHits, nowPlayingIDs);
+    updateFilmographyControls();
+    if (!isMobileLayout()) {
+      const prev = previousSelected ? hits.find((hit) => hit.id === previousSelected) : undefined;
+      selected = prev ?? hits[0];
+    }
+    updateResults();
+    return titleHits;
+  }
+
   const enriched = sortPersonFilmographyHits(await enrichFilmographyProviders(personHits, settings.region));
   const combined = mergeSearchResults(titleHits, enriched, trimmed);
   hits = prioritizeNowPlaying(combined, nowPlayingIDs);
   updateFilmographyControls();
   if (!isMobileLayout()) {
     const prev = previousSelected ? hits.find((hit) => hit.id === previousSelected) : undefined;
-    const filmography = hits.filter((hit) => hit.matchedPerson);
-    if (filmography.length) {
-      selected = prev?.matchedPerson ? prev : filmography[0];
-    } else {
-      selected = prev ?? hits[0];
-    }
+    selected = prev ?? hits[0];
   }
   updateResults();
   if (!isMobileLayout() && hasPersonFilmography(hits)) {

@@ -141,6 +141,25 @@ export function isKnownStageNameQuery(query: string): boolean {
   return Boolean(STAGE_NAME_PERSON_IDS[compact(query)]);
 }
 
+export function isExactTitleSearch(query: string, titleHits: SearchHit[]): boolean {
+  const { text } = parseTitleSearchQuery(query);
+  const q = compact(text);
+  if (!q) return false;
+  return titleHits.some((hit) => !hit.matchedPerson && (compact(hit.titleKO) === q || compact(hit.titleEN) === q));
+}
+
+function hasPinnedTitleIntent(text: string): boolean {
+  return Boolean(TITLE_PINNED[compact(text)]?.length);
+}
+
+export function shouldIncludePersonFilmography(query: string, titleHits: SearchHit[]): boolean {
+  const { text } = parseTitleSearchQuery(query);
+  if (isKnownStageNameQuery(text)) return true;
+  if (hasPinnedTitleIntent(text)) return false;
+  if (isExactTitleSearch(query, titleHits)) return false;
+  return true;
+}
+
 export function isPersonSearchTitleNoise(
   hit: SearchHit,
   query: string,
@@ -592,9 +611,13 @@ async function pickMatchedPeople(query: string): Promise<PersonCandidate[]> {
   if (!peopleByID.size) return [];
 
   const minScore = personMatchMinForQueries(matchQueries);
+  const { text } = parseTitleSearchQuery(query);
+  const q = compact(text);
+  const strictShortHangul = containsHangul(text) && q.length <= 4 && !isKnownStageNameQuery(text);
+  const requiredScore = strictShortHangul ? Math.max(minScore, 100) : minScore;
   const matched = [...peopleByID.values()]
     .map((person) => ({ person, score: personMatchScore(person.names, matchQueries) }))
-    .filter((row) => row.score >= minScore)
+    .filter((row) => row.score >= requiredScore)
     .sort(comparePersonCandidates);
   if (!matched.length) return [];
 
@@ -779,7 +802,10 @@ function searchHitScore(hit: SearchHit, query: string, year?: string): number {
   const shortQuery = compact(query).length <= 4;
 
   if (fromFilmography && personScore >= 80 && shortQuery) {
-    return 3_000_000 + personScore * 1_000 + (korean ? 50_000 : 0) + votes;
+    const needsExactPerson = containsHangul(query);
+    if ((!needsExactPerson && personScore >= 80) || (needsExactPerson && personScore >= 100)) {
+      return 3_000_000 + personScore * 1_000 + (korean ? 50_000 : 0) + votes;
+    }
   }
   if (fromFilmography && korean) {
     return 2_000_000 + personScore * 1_000 + titleScore * 10 + votes;
