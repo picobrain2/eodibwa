@@ -1,9 +1,9 @@
-import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortFilmographyHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
+import { enrichFilmographyProviders, fetchDetail, fetchPersonDetail, enrichDetail, fetchPopularReviews, isKnownStageNameQuery, isPersonSearchTitleNoise, mergeSearchResults, parseTitleSearchQuery, providerLink, refineSearchWithImdb, resolvePersonIDs, searchPersonHits, searchPersonKnownHits, searchTitleHits, sortFilmographyHits, sortPersonFilmographyHits, watchaSearchURL } from "./api";
 import { motnCacheFresh } from "./motn";
 import { clearRecommendBundleCache, getRecommendBundle, providersForGenre, recommendBundleFresh, type RecommendBundle } from "./recommend-data";
 import { loadRecommendations as fetchRecommendations, refreshProviderGroup, invalidateRecommendChart, RECOMMEND_GENRES, regionProviderIDs, type RecommendProvider } from "./recommend";
 import { invalidateNowPlaying, loadNowPlaying } from "./theaters";
-import { classifyCreditFilter, compact, containsHangul } from "./lang";
+import { classifyCreditFilter, compact, containsHangul, isStrongMatch } from "./lang";
 import { reviewsNeedTranslation, reviewsTranslated, translateReviews } from "./translate";
 import { settings } from "./settings";
 import { OFFER_LABEL, REGIONS, kindLabel, posterURL, regionName, runtimeText, type FilmographySort, type MediaFilter, type PersonDetail, type SearchHit, type TitleDetail, type WatchOffer } from "./types";
@@ -247,9 +247,11 @@ function isInTheaters(hit: SearchHit): boolean {
 
 function shouldDeferDetailForPersonSearch(hit: SearchHit | undefined, query: string): boolean {
   if (!hit || hit.matchedPerson) return false;
-  if (isKnownStageNameQuery(query)) return true;
-  if (isPersonSearchTitleNoise(hit, query, { forPersonSearch: true })) return true;
-  if (containsHangul(query) && compact(query).length <= 4) return true;
+  const { text } = parseTitleSearchQuery(query);
+  if (isKnownStageNameQuery(text)) return true;
+  if (isPersonSearchTitleNoise(hit, text, { forPersonSearch: true })) return true;
+  if (isStrongMatch([hit.titleKO, hit.titleEN], text)) return false;
+  if (containsHangul(text) && compact(text).length <= 4) return true;
   return false;
 }
 

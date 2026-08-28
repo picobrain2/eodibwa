@@ -1,5 +1,5 @@
 import { lookupKMDB } from "./kmdb";
-import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, pickEnglish, pickKorean, relevance, searchVariants, sortableTitle } from "./lang";
+import { containsHangul, collapsed, compact, formatCreditRole, formatCrewRole, formatDepartment, hangulPartialTitleVariants, hangulSpaceVariants, isCrewFocusedDepartment, isLatinOnly, isStrongMatch, pickEnglish, pickKorean, relevance, searchVariants, sortableTitle } from "./lang";
 import { settings } from "./settings";
 import { loadNowPlaying } from "./theaters";
 import type { CastMember, FilmographySort, MediaKind, MediaVideo, PersonDetail, PopularReview, RegionAvailability, SearchHit, StreamingProviderSummary, TitleDetail, WatchOffer, WatchProvider } from "./types";
@@ -76,6 +76,12 @@ const PERSON_KNOWN_FOR_MIN = 1;
 const PERSON_QUERY_ALIASES: Record<string, string[]> = {
   iu: ["아이유"],
 };
+/** 짧은 검색어에서 TMDB multi가 놓치거나 순위가 밀리는 대표작 */
+const TITLE_PINNED: Record<string, { kind: MediaKind; tmdbID: number; year?: string }[]> = {
+  호프: [{ kind: "movie", tmdbID: 1058424, year: "2026" }],
+};
+/** 한글 발음/별칭 → TMDB 추가 검색어 (동음이의 작품 구분용) */
+const TITLE_QUERY_ALIASES: Record<string, string[]> = {};
 const STAGE_NAME_PERSON_IDS: Record<string, number> = {
   iu: 1252318,
   하하: 138519,
@@ -657,27 +663,65 @@ async function searchPersonFilmography(query: string): Promise<SearchHit[]> {
   }
 }
 
+export function parseTitleSearchQuery(raw: string): { text: string; year?: string } {
+  const match = raw.match(/(?:^|\s)((?:19|20)\d{2})(?:\s|$)/);
+  if (!match) return { text: raw.trim() };
+  const year = match[1];
+  const text = raw.replace(match[0], " ").replace(/\s+/g, " ").trim();
+  return { text: text || raw.trim(), year };
+}
+
+function yearBoost(hit: SearchHit, year?: string): number {
+  if (!year) return 0;
+  if (hit.year === year) return 300_000;
+  if (hit.year && Math.abs(Number(hit.year) - Number(year)) <= 1) return 50_000;
+  return 0;
+}
+
 function filterShortLatinTitleHits(hits: SearchHit[], query: string): SearchHit[] {
   if (compact(query).length > 4 || !isLatinOnly(query)) return hits;
   return hits.filter((hit) => relevance([hit.titleKO, hit.titleEN], query) >= 80);
+}
+
+function bestPersonMatchScore(hits: SearchHit[], query: string): number {
+  const queries = personRankQueries(query);
+  let best = 0;
+  for (const hit of hits) {
+    if (!hit.matchedPerson) continue;
+    const names = hit.matchedPersonNames ?? [hit.matchedPerson];
+    best = Math.max(best, personMatchScore(names, queries));
+  }
+  return best;
+}
+
+function hasStrongTitleMatch(hits: SearchHit[], query: string): boolean {
+  return hits.some((hit) => !hit.matchedPerson && isStrongMatch([hit.titleKO, hit.titleEN], query));
 }
 
 function filterTitleNoise(hits: SearchHit[], query: string): SearchHit[] {
   const hasFilmography = hits.some((hit) => hit.matchedPerson);
   if (!hasFilmography) return hits;
   const q = compact(query);
-  if (q.length <= 4 && (isLatinOnly(query) || containsHangul(query))) {
+  const personScore = bestPersonMatchScore(hits, query);
+  const strongTitles = hasStrongTitleMatch(hits, query);
+  if (isKnownStageNameQuery(query) && personScore >= 100) {
     return hits.filter((hit) => hit.matchedPerson);
+  }
+  if (q.length <= 4 && (isLatinOnly(query) || containsHangul(query))) {
+    if (personScore >= 100 && !strongTitles) {
+      return hits.filter((hit) => hit.matchedPerson);
+    }
+    return filterPersonSearchTitleNoise(hits, query);
   }
   return filterPersonSearchTitleNoise(hits, query);
 }
 
-function compareSearchHits(a: SearchHit, b: SearchHit, query: string): number {
+function compareSearchHits(a: SearchHit, b: SearchHit, query: string, year?: string): number {
   if (a.matchedPerson && b.matchedPerson) {
     return comparePersonFilmographyHits(a, b);
   }
-  const left = searchHitScore(a, query);
-  const right = searchHitScore(b, query);
+  const left = searchHitScore(a, query, year);
+  const right = searchHitScore(b, query, year);
   if (left !== right) return right - left;
   return popularityVotes(b) - popularityVotes(a);
 }
@@ -710,8 +754,20 @@ function isKoreanHit(hit: SearchHit): boolean {
   return false;
 }
 
-function searchHitScore(hit: SearchHit, query: string): number {
+function titleAliasBoost(hit: SearchHit, query: string): number {
+  const aliases = TITLE_QUERY_ALIASES[compact(query)] ?? [];
+  if (!aliases.length || hit.matchedPerson) return 0;
+  for (const alias of aliases) {
+    if (isStrongMatch([hit.titleKO, hit.titleEN], alias)) return 500_000;
+    if (relevance([hit.titleKO, hit.titleEN], alias) >= 60) return 200_000;
+  }
+  return 0;
+}
+
+function searchHitScore(hit: SearchHit, query: string, year?: string): number {
+  const aliasBoost = titleAliasBoost(hit, query);
   const titleScore = relevance([hit.titleKO, hit.titleEN], query);
+  const yearBonus = yearBoost(hit, year);
   const personScore = hit.matchedPersonNames
     ? relevance(hit.matchedPersonNames, query)
     : hit.matchedPerson
@@ -731,16 +787,19 @@ function searchHitScore(hit: SearchHit, query: string): number {
   if (fromFilmography) {
     return 1_000_000 + personScore * 1_000 + titleScore * 10 + votes;
   }
+  if (!fromFilmography && titleScore >= 100) {
+    return 800_000 + yearBonus + aliasBoost + votes;
+  }
   if (korean && titleScore >= 60) {
-    return 100_000 + titleScore * 1_000 + votes;
+    return aliasBoost + yearBonus + 100_000 + titleScore * 1_000 + votes;
   }
   if (titleScore >= 80 && shortQuery && isLatinOnly(query) && !korean) {
-    return 500 + votes / 1_000;
+    return yearBonus + 500 + votes / 1_000;
   }
   if (titleScore >= 80) {
-    return titleScore * 1_000 + votes;
+    return aliasBoost + yearBonus + titleScore * 1_000 + votes;
   }
-  return titleScore * 10 + votes / 1_000;
+  return aliasBoost + yearBonus + titleScore * 10 + votes / 1_000;
 }
 
 async function searchOnce(query: string): Promise<SearchHit[]> {
@@ -765,6 +824,25 @@ async function searchOnce(query: string): Promise<SearchHit[]> {
     hits.push(hit);
   }
   return hits;
+}
+
+async function fetchPinnedTitleHits(text: string, year?: string): Promise<SearchHit[]> {
+  const pinned = TITLE_PINNED[compact(text)] ?? [];
+  const items = year ? pinned.filter((item) => !item.year || item.year === year) : pinned;
+  if (!items.length) return [];
+
+  const hits = await Promise.all(items.map(async (item) => {
+    try {
+      const [ko, en] = await Promise.all([
+        tmdb<SearchItem>(`/${item.kind}/${item.tmdbID}`, { language: "ko-KR" }),
+        tmdb<SearchItem>(`/${item.kind}/${item.tmdbID}`, { language: "en-US" }),
+      ]);
+      return toHit({ ...ko, id: item.tmdbID, media_type: item.kind }, en);
+    } catch {
+      return undefined;
+    }
+  }));
+  return hits.filter((hit): hit is SearchHit => Boolean(hit));
 }
 
 async function collect(queries: string[]): Promise<SearchHit[]> {
@@ -864,8 +942,8 @@ async function fetchImdbVoteCount(imdbID: string): Promise<number | undefined> {
   }
 }
 
-function sortSearchHits(hits: SearchHit[], query: string): SearchHit[] {
-  return [...hits].sort((a, b) => compareSearchHits(a, b, query));
+function sortSearchHits(hits: SearchHit[], query: string, year?: string): SearchHit[] {
+  return [...hits].sort((a, b) => compareSearchHits(a, b, query, year));
 }
 
 async function enrichSearchHitsWithImdb(hits: SearchHit[]): Promise<SearchHit[]> {
@@ -891,11 +969,12 @@ async function enrichSearchHitsWithImdb(hits: SearchHit[]): Promise<SearchHit[]>
 export async function refineSearchWithImdb(hits: SearchHit[], query: string): Promise<SearchHit[]> {
   if (!settings.hasOMDb || !hits.length) return hits;
 
-  const preliminary = sortSearchHits(hits, query);
+  const { text, year } = parseTitleSearchQuery(query);
+  const preliminary = sortSearchHits(hits, text, year);
   const enrichedTop = await enrichSearchHitsWithImdb(preliminary.slice(0, ENRICH_LIMIT));
   const enrichedByID = new Map(enrichedTop.map((hit) => [hit.id, hit]));
   const merged = preliminary.map((hit) => enrichedByID.get(hit.id) ?? hit);
-  return sortSearchHits(merged, query);
+  return sortSearchHits(merged, text, year);
 }
 
 async function fetchLocalizedTitles(kind: MediaKind, id: number): Promise<LocalizedTitles> {
@@ -965,14 +1044,23 @@ function titleSearchVariants(query: string): string[] {
   for (const alias of (PERSON_QUERY_ALIASES[key] ?? []).filter(containsHangul)) {
     if (!titleVariants.includes(alias)) titleVariants.push(alias);
   }
+  for (const alias of TITLE_QUERY_ALIASES[key] ?? []) {
+    if (!titleVariants.includes(alias)) titleVariants.push(alias);
+  }
   return titleVariants;
 }
 
 export async function searchTitleHits(query: string): Promise<SearchHit[]> {
   if (isKnownStageNameQuery(query)) return [];
+  const { text, year } = parseTitleSearchQuery(query);
+  const [pinned, collected] = await Promise.all([
+    fetchPinnedTitleHits(text, year),
+    collect(titleSearchVariants(text)),
+  ]);
   const hits = sortSearchHits(
-    filterShortLatinTitleHits(await collect(titleSearchVariants(query)), query),
-    query,
+    filterShortLatinTitleHits([...pinned, ...collected], text),
+    text,
+    year,
   );
   return localizeHitTitles(hits);
 }
@@ -982,7 +1070,8 @@ export async function searchPersonHits(query: string): Promise<SearchHit[]> {
 }
 
 export function mergeSearchResults(titleHits: SearchHit[], personHits: SearchHit[], query: string): SearchHit[] {
-  return sortPersonFilmographyHits(filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), query), query));
+  const { text, year } = parseTitleSearchQuery(query);
+  return sortPersonFilmographyHits(filterTitleNoise(sortSearchHits(mergeHits(titleHits, personHits), text, year), text));
 }
 
 export async function searchTitles(query: string): Promise<SearchHit[]> {
