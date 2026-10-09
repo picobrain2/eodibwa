@@ -71,6 +71,30 @@ let detailEl!: HTMLElement;
 let recommendHost!: HTMLDivElement;
 let detailHost!: HTMLDivElement;
 
+type ScrollUpdateOptions = {
+  resetScroll?: boolean;
+};
+
+function readScroll(el: HTMLElement | null | undefined): { top: number; left: number } {
+  return { top: el?.scrollTop ?? 0, left: el?.scrollLeft ?? 0 };
+}
+
+function applyScroll(el: HTMLElement | null | undefined, top: number, left: number): void {
+  if (!el) return;
+  el.scrollTop = top;
+  el.scrollLeft = left;
+}
+
+function withPreservedScroll(
+  container: HTMLElement | null | undefined,
+  update: () => void,
+  preserve = true,
+): void {
+  const saved = preserve ? readScroll(container) : { top: 0, left: 0 };
+  update();
+  if (preserve) applyScroll(container, saved.top, saved.left);
+}
+
 function syncMobileViewFromHistory(state: { mobile?: MobileView } | null): void {
   const view = state?.mobile ?? "main";
   showDetailPage = view === "detail";
@@ -85,7 +109,7 @@ function pushMobileView(view: MobileView): void {
 function openDetailPage(): void {
   showDetailPage = true;
   pushMobileView("detail");
-  updateDetail();
+  updateDetail({ resetScroll: true });
 }
 
 function closeRecommendPage(useHistory = true): void {
@@ -144,9 +168,9 @@ function goToMainHome(): void {
   selectedProviderID = 8;
   ensureSelectedProvider();
   updateFilmographyControls();
-  updateResults();
-  updateDetail();
-  searchInput?.focus();
+  updateResults({ resetScroll: true });
+  updateDetail({ resetScroll: true });
+  searchInput?.focus({ preventScroll: true });
 }
 
 function bindHomeButtons(root: ParentNode = app): void {
@@ -557,7 +581,7 @@ function searchForPerson(name: string): void {
   }
 
   void runSearch(trimmed);
-  searchInput?.focus();
+  searchInput?.focus({ preventScroll: true });
 }
 
 function bindPersonSearch(root: ParentNode): void {
@@ -747,28 +771,35 @@ function bindRecommendUI(root: ParentNode): void {
   bindProviderControls(root);
 }
 
-function updateResults(): void {
+function updateResults(options?: ScrollUpdateOptions): void {
+  if (!mounted) return;
   const list = filteredHits();
   const showRecommend = !query.trim() && !hits.length && !searching;
   if (showRecommend) ensureRecommendationsLoaded();
-  resultsEl.innerHTML = `
+  const preserve = !options?.resetScroll;
+  withPreservedScroll(resultsEl, () => {
+    resultsEl.innerHTML = `
     ${searching && !hits.length ? `<div class="loading">검색 중…</div>` : ""}
     ${loadingPersonSearch ? `<div class="loading inline">출연작 불러오는 중…</div>` : ""}
     ${error && !hits.length && query.trim() ? `<div class="empty">${escapeHTML(error)}</div>` : ""}
     ${showRecommend ? recommendHTML() : ""}
     ${list.map((hit) => hitButton(hit, selected?.id)).join("")}
   `;
-  bindHits(resultsEl);
-  bindRecommendUI(resultsEl);
-  updateFilmographySortControl();
+    bindHits(resultsEl);
+    bindRecommendUI(resultsEl);
+    updateFilmographySortControl();
+  }, preserve);
 }
 
-function updateRecommendPage(): void {
+function updateRecommendPage(options?: ScrollUpdateOptions): void {
   if (!mounted) return;
   if (!isMobileLayout() || !showRecommendPage) {
     recommendHost.innerHTML = "";
     return;
   }
+  const prevBody = recommendHost.querySelector<HTMLElement>(".recommend-page-body");
+  const preserve = !options?.resetScroll;
+  const saved = preserve ? readScroll(prevBody) : { top: 0, left: 0 };
   recommendHost.innerHTML = `
     <div class="recommend-page">
       <header class="recommend-page-head">
@@ -783,9 +814,10 @@ function updateRecommendPage(): void {
     closeRecommendPage();
   });
   bindHomeButtons(recommendHost);
-  const body = recommendHost.querySelector(".recommend-page-body");
+  const body = recommendHost.querySelector<HTMLElement>(".recommend-page-body");
   if (!body) return;
   bindRecommendUI(body);
+  applyScroll(body, saved.top, saved.left);
 }
 
 function bindDetailControls(root: ParentNode): void {
@@ -800,43 +832,50 @@ function bindDetailControls(root: ParentNode): void {
     recommendFromBundle = false;
     selectedProviderID = 8;
     ensureSelectedProvider();
-    void refreshNowPlaying().then(() => {
+    void (async () => {
+      await refreshNowPlaying();
       if (detail?.kind === "movie") {
         detail.inTheaters = nowPlayingIDs.has(detail.tmdbID);
       }
       updateDetail();
-    });
+    })();
     void loadRecommendations();
-    updateDetail();
   });
   bindPersonSearch(root);
   bindVideoPreview(root);
   bindStillPreview(root);
 }
 
-function updateDetail(): void {
+function updateDetail(options?: ScrollUpdateOptions): void {
+  if (!mounted) return;
+  const preserve = !options?.resetScroll;
   if (isMobileLayout()) {
     detailEl.innerHTML = "";
+    const prevBody = detailHost.querySelector<HTMLElement>(".detail-page-body");
+    const saved = preserve ? readScroll(prevBody) : { top: 0, left: 0 };
     updateDetailPage();
+    applyScroll(detailHost.querySelector<HTMLElement>(".detail-page-body"), saved.top, saved.left);
     return;
   }
-  detailHost.innerHTML = "";
-  if (detail) {
+  withPreservedScroll(detailEl, () => {
+    detailHost.innerHTML = "";
+    if (detail) {
+      detailEl.innerHTML = detailHTML();
+      bindDetailControls(detailEl);
+      return;
+    }
+    if (loadingDetail || detailError) {
+      detailEl.innerHTML = detailHTML();
+      bindDetailControls(detailEl);
+      return;
+    }
+    if (personDetails.length || loadingPersonDetail) {
+      detailEl.innerHTML = personDetailHTML();
+      return;
+    }
     detailEl.innerHTML = detailHTML();
     bindDetailControls(detailEl);
-    return;
-  }
-  if (loadingDetail || detailError) {
-    detailEl.innerHTML = detailHTML();
-    bindDetailControls(detailEl);
-    return;
-  }
-  if (personDetails.length || loadingPersonDetail) {
-    detailEl.innerHTML = personDetailHTML();
-    return;
-  }
-  detailEl.innerHTML = detailHTML();
-  bindDetailControls(detailEl);
+  }, preserve);
 }
 
 function formatPersonBirthday(value?: string): string | undefined {
@@ -1057,7 +1096,7 @@ async function runSearch(raw: string): Promise<void> {
     filter = "all";
     filmographySort = "default";
     updateFilmographyControls();
-    updateResults();
+    updateResults({ resetScroll: true });
     return;
   }
   if (!settings.hasTMDB) {
@@ -1080,8 +1119,8 @@ async function runSearch(raw: string): Promise<void> {
   detailError = "";
   personDetailGeneration += 1;
   if (!isMobileLayout()) selected = undefined;
-  updateResults();
-  updateDetail();
+  updateResults({ resetScroll: true });
+  updateDetail({ resetScroll: true });
 
   try {
     const [titleHits, playing] = await Promise.all([
@@ -1244,7 +1283,7 @@ async function loadSelected(): Promise<void> {
   loadingReviews = false;
   detailError = "";
   detail = undefined;
-  updateDetail();
+  updateDetail({ resetScroll: true });
   try {
     const next = await fetchDetail(hit.kind, hit.tmdbID);
     if (generation !== detailGeneration) return;
